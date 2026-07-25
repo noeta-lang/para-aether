@@ -24,7 +24,7 @@ permissions:
 # the tree against.
 env:
   CARGO_TERM_COLOR: always
-  NOETA_VERSION: v0.1.0
+  NOETA_VERSION: ${{ vars.NOETA_VERSION || 'v0.1.0' }}
 
 jobs:
   publish:

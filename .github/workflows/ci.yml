@@ -17,11 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 # Pinned in lockstep with the toolchain repo's own CI (dtolnay/rust-toolchain@1.97.0 there): the
-# NOETA_VERSION below is the toolchain release the examples are proven against. Bumping is
+# NOETA_VERSION resolves from the org-level Actions variable of the same name (single bump
+# point for every para repo), falling back to the literal. Bumping is
 # deliberate — raise it here and in `release.yml` together.
 env:
   CARGO_TERM_COLOR: always
-  NOETA_VERSION: v0.1.0
+  NOETA_VERSION: ${{ vars.NOETA_VERSION || 'v0.1.0' }}
 
 jobs:
   examples:
