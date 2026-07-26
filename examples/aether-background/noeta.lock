@@ -3,8 +3,8 @@ version = 2
 
 [[package]]
 name = "para/aether"
-version = "0.1.1"
+version = "0.1.2"
 source = "path"
 path = "../.."
 edition = "2026"
-hash = "230e92bd65b06e67928ed723adc7b40da3a914fba08bf3973bc5c95384067bc5"
+hash = "98f2675df02b005de06a442a3858a7da2e34d90fd59ad3f0708d14ce6a23a0ec"
