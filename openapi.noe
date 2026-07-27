@@ -290,15 +290,15 @@ fn responses(r: Route, reg: Registry): Map<string, dyn> {
     mut reply: Map<string, dyn> = {"description": description}
     match ret {
         some(ty) => {
-            if !is_unit(ty) && !is_response(ty) {
+            if !is_unit(unwrap_result(ty)) && !is_response(unwrap_result(ty)) {
                 // `unwrap_option`: a `?T` handler's absent answer is the 404 below, so a 200 body is
                 // always the `T`. Stating `anyOf: [T, null]` here would describe a `null` body this
                 // router never sends.
-                reply = reply.set("content", content_of("application/json", schema_of(unwrap_option(ty), reg)))
+                reply = reply.set("content", content_of("application/json", schema_of(unwrap_option(unwrap_result(ty)), reg)))
             }
             // A handler declared to return a bare `string` replies `text/plain` (that is what
             // `coerce_response` does), so the document must say so rather than claim JSON.
-            if is_string(ty) {
+            if is_string(unwrap_result(ty)) {
                 reply = {"description": description}
                 reply = reply.set("content", content_of("text/plain", string_schema()))
             }
@@ -309,7 +309,8 @@ fn responses(r: Route, reg: Registry): Map<string, dyn> {
     out = out.set(code, reply)
     // A handler declared `?T` says its answer may be absent, and the router turns an absent answer
     // into a 404 — so the document states both, from the one declaration.
-    if is_option(ret ?? Type.Dyn) {
+    // A `Result<?T, E>` says all three things at once, so the checks unwrap in that order.
+    if is_option(unwrap_result(ret ?? Type.Dyn)) {
         mut missing: Map<string, dyn> = {"description": "Not Found"}
         out = out.set("404", missing)
     }
@@ -395,6 +396,16 @@ fn body_type_name(ty: Type): ?string {
         // `Request` reflects as a bare `Named` — the live request, injected, never sent.
         Type.Named(name, _) => if name == "Request" then none else some(name),
         _ => none,
+    }
+}
+
+// The success type of a `Result<T, E>`, or the type itself. A handler's `Err` is the 500 the router
+// sends, so every other question the document asks — the body schema, whether an absent answer is
+// possible — is a question about the `Ok`.
+fn unwrap_result(ty: Type): Type {
+    return match ty {
+        Type.Result(ok, _) => ok,
+        _ => ty,
     }
 }
 
