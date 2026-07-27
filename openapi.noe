@@ -53,18 +53,6 @@ pub struct Summary {
     description: string = ""
 }
 
-// The status code a handler's successful reply carries, when it is not 200.
-//
-// A handler that returns a value cannot say "201" in its type — the status is a property of the
-// reply, and a handler returning a bare value has delegated the reply to the framework. A handler
-// that builds its own `Response` is already saying it in code, and this attribute is how it says it
-// to the document as well.
-@attribute(Method)
-pub struct Status {
-    code: int
-    description: string = "OK"
-}
-
 // Serve this app's own document at `path`.
 //
 // The route is added at runtime rather than declared with `#[Get]`, because the URL is the
@@ -325,6 +313,12 @@ fn responses(r: Route, reg: Registry): Map<string, dyn> {
         mut missing: Map<string, dyn> = {"description": "Not Found"}
         out = out.set("404", missing)
     }
+    // A handler declared `Result<T, E>` says it can fail in a way it cannot resolve itself, and the
+    // router answers 500 for the `Err`. Same declaration, same document.
+    if is_result(ret ?? Type.Dyn) {
+        mut failed: Map<string, dyn> = {"description": "Internal Server Error"}
+        out = out.set("500", failed)
+    }
     return out
 }
 
@@ -352,8 +346,8 @@ fn summary_attr(r: Route): ?Summary {
     return none
 }
 
-fn status_attr(r: Route): ?Status {
-    for a in attributes_of::<Status>() {
+fn status_attr(r: Route): ?aether.Status {
+    for a in attributes_of::<aether.Status>() {
         if a.target == r.target {
             return some(a.value)
         }
@@ -408,6 +402,13 @@ fn unwrap_option(ty: Type): Type {
     return match ty {
         Type.Option(inner) => inner,
         _ => ty,
+    }
+}
+
+fn is_result(ty: Type): bool {
+    return match ty {
+        Type.Result(_, _) => true,
+        _ => false,
     }
 }
 

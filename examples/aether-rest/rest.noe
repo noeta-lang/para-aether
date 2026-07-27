@@ -4,7 +4,7 @@
 //
 // Nothing here registers a route, decodes a body, or reads a URL by hand — the whole wiring is the
 // `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
-use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider}
+use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider, Status}
 use para.aether.openapi
 use std.json
 
@@ -47,7 +47,10 @@ class NotesController {
         return Note { id: id, title: "note ${id}", done: false }
     }
 
-    // A body decodes into a typed struct; the reply is a value, rendered as JSON.
+    // A body decodes into a typed struct; the reply is a value, rendered as JSON. `#[Status]` is
+    // the one fact a signature cannot carry — and the ROUTER answers with it, so the document
+    // cannot be describing a status the service does not send.
+    #[Status(201, description: "Created")]
     #[Post("/notes")]
     fn create(body: NewNote): Note {
         return Note { id: 3, title: body.title, done: false }
@@ -74,6 +77,13 @@ class NotesController {
     #[Get("/notes/{id}/draft")]
     fn draft(id: int): ?Note {
         return if id == 1 then some(Note { id: 1, title: "a draft", done: false }) else none
+    }
+
+    // A handler that can fail in a way it cannot resolve says so with `Result`. The `Ok` is the
+    // ordinary reply; the `Err` is a 500 carrying its message, and the document states both.
+    #[Get("/notes/{id}/export")]
+    fn export(id: int): Result<Note, string> {
+        return if id == 1 then Ok(Note { id: 1, title: "exported", done: true }) else Err("no exporter for note ${id}")
     }
 
     // Several `{…}` segments bind independently, by name and not by position.
@@ -264,6 +274,36 @@ echo app.handle("DELETE", "/notes/7", "")
         responses = draft["responses"].as<Map<string, dyn>>() ?? {}
         assert(responses.has("200"))
         assert(responses.has("404"))
+        assert(json.stringify(responses["200"]).contains("#/components/schemas/Note"))
+    }
+
+    fn a_declared_status_is_what_the_router_answers(): void {
+        app = build()
+        // `resolve` is the whole `Response`, where `handle` projects only the body — the status is
+        // what this test is about.
+        assert(app.resolve("POST", "/notes", "{\"title\":\"new\"}", none).status() == 201)
+        assert(app.resolve("GET", "/notes/7", "", none).status() == 200)
+
+        create = operation(openapi.spec(build(), info()), "/notes", "post")
+        responses = create["responses"].as<Map<string, dyn>>() ?? {}
+        assert(responses.has("201"))
+        assert(!responses.has("200"))
+    }
+
+    fn a_result_handler_reports_its_error_as_a_500(): void {
+        app = build()
+        assert(app.resolve("GET", "/notes/1/export", "", none).status() == 200)
+        assert(app.handle("GET", "/notes/1/export", "").contains("exported"))
+
+        failed = app.resolve("GET", "/notes/2/export", "", none)
+        assert(failed.status() == 500)
+        assert(failed.body().contains("no exporter for note 2"))
+
+        // The document states both outcomes, from the one `Result<Note, string>`.
+        export = operation(openapi.spec(build(), info()), "/notes/{id}/export", "get")
+        responses = export["responses"].as<Map<string, dyn>>() ?? {}
+        assert(responses.has("200"))
+        assert(responses.has("500"))
         assert(json.stringify(responses["200"]).contains("#/components/schemas/Note"))
     }
 

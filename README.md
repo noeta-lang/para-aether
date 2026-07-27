@@ -81,6 +81,9 @@ A handler's return value becomes the reply at the one point the runtime value ex
 | `Response` (from `std.http`) | sent verbatim — status and headers survive, so a handler can set a `Set-Cookie` or a `404` itself |
 | anything else | a `200` with the value rendered by `json.stringify`, `content-type: application/json` |
 | `none` (from a `?T` handler) | a `404 Not Found` — "may be absent" is what the type says, and 404 is what HTTP calls absent |
+| `Err(e)` (from a `Result` handler) | a `500` carrying the message — the `Ok` continues as any other value |
+
+`#[Status(code)]` on a handler sets the status of the reply the framework builds (a `Response` a handler builds itself already says its own, and a `none` is a 404 regardless). It lives beside the route attributes rather than with the spec generator on purpose: the router answers with it and the document reports it, so an annotation cannot describe a status the service does not send.
 
 The third row is what lets a handler be written as `fn show(id: int): Pet` — the shape a caller wants, and the shape the OpenAPI generator reads a response schema off.
 
@@ -292,10 +295,12 @@ echo openapi.document(app, info)             // or print it, to commit and diff
 | `requestBody` | the handler's struct parameter, `$ref`'d into `components.schemas` |
 | response schema | the handler's **return type** (`returns_of`) — a `string` return is `text/plain`, a `Response` is left unstated, a value type is its schema |
 | a `404` response | a `?T` return: the router answers 404 for `none`, so the document states it, from the same declaration |
+| a `500` response | a `Result<T, E>` return: the router answers 500 for the `Err` |
+| the success status | `#[Status(code)]`, which the router itself uses |
 | `components.schemas` | `field_specs_of` on every struct the walk meets, recursively; `required` is the fields that declared neither `?T` nor a default |
 | `description` | the handler's `@doc` block, when the `doc` tier is live |
 
-Two attributes exist for the two facts a signature genuinely cannot carry, and nothing else:
+Two attributes exist for the two facts a signature genuinely cannot carry, and nothing else — and `#[Status]` is a *routing* attribute the document merely reports, so the two cannot disagree:
 
 ```noeta
 #[Status(201, description: "Created")]     // a created resource answers 201
