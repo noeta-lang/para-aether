@@ -1,0 +1,44 @@
+// Typed form binding: a browser `<form>` posts `application/x-www-form-urlencoded`, and a handler
+// that declares a body struct gets it decoded into that struct — the same typed door a JSON body
+// goes through, so the struct needs no second derive.
+//
+// expect: stdout "form: created Ada (36), admin=true"
+// expect: stdout "json: created Grace (45), admin=false"
+// expect: exit 0
+use para.aether.{App, Post}
+use std.http.server
+use std.http.{Request, Response}
+use std.json
+
+@derive(Deserialize<Json>)
+struct CreateUser {
+    name: string
+    age: int
+    admin: bool
+}
+
+class UsersController {
+    fn new(): UsersController { return UsersController {} }
+
+    #[Post("/users")]
+    fn create(body: CreateUser): string {
+        return "created ${body.name} (${body.age}), admin=${body.admin}"
+    }
+}
+
+app = App.new()
+app.register("UsersController", UsersController.new())
+app.discover()
+
+// A form submission. Values arrive as text, so `age` and `admin` are coerced to the struct's
+// declared types; `name` carries a percent-escape and a `+`, decoded before binding.
+form_req = server.incoming("POST", "/users", "name=Ada&age=36&admin=true", {
+    "content-type": "application/x-www-form-urlencoded",
+})
+echo "form: ${app.route(form_req).body()}"
+
+// The JSON path is untouched — same handler, same struct.
+json_req = server.incoming("POST", "/users", "{\"name\":\"Grace\",\"age\":45,\"admin\":false}", {
+    "content-type": "application/json",
+})
+echo "json: ${app.route(json_req).body()}"

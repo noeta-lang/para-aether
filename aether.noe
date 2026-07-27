@@ -553,9 +553,9 @@ pub class App {
     fn arg_for(p: ParamInfo, id: string, body: string, req: ?Request): Result<dyn, Response> {
         return match p.type {
             DynTrait(n) => self.resolve_service(n),
-            Struct(n, _) => Ok(self.materialize(n, id, body)),
-            Class(n, _) => Ok(self.materialize(n, id, body)),
-            Named(n, _) => if n == "Request" then Ok(request_arg(req)) else Ok(self.materialize(n, id, body)),
+            Struct(n, _) => Ok(self.materialize(n, id, body, req)),
+            Class(n, _) => Ok(self.materialize(n, id, body, req)),
+            Named(n, _) => if n == "Request" then Ok(request_arg(req)) else Ok(self.materialize(n, id, body, req)),
             _ => Err(server.response(500, "500 cannot inject a parameter of this type")),
         }
     }
@@ -575,11 +575,17 @@ pub class App {
 
     // A nominal parameter is either a route-bound model (loaded from the store by the route id) or a
     // request body materialized into a typed struct via `@derive(Deserialize<Json>)`.
-    fn materialize(name: string, id: string, body: string): dyn {
+    //
+    // A browser `<form>` posts `application/x-www-form-urlencoded`, not JSON, so a handler that
+    // declares a body struct would otherwise 400 on every form submission. The form body is
+    // converted to a JSON object first and then decoded through the SAME typed door, so a struct
+    // needs no second derive and the two content types stay one code path.
+    fn materialize(name: string, id: string, body: string, req: ?Request): dyn {
         if self.is_bound(name) {
             return self.store.load(name, id)
         }
-        return match json.decode_typed(name, body) {
+        payload = if is_form_request(req) then form_to_json(server.parse_form(body)) else body
+        return match json.decode_typed(name, payload) {
             Ok(v) => v,
             Err(e) => panic("400 ${e}"),
         }
@@ -650,4 +656,44 @@ fn content_type(name: string): string {
 fn is_text(ct: string): bool {
     return ct.starts_with("text/") || ct.starts_with("application/json")
         || ct.starts_with("application/xml") || ct.starts_with("image/svg+xml")
+}
+
+// Whether this request carries a form body rather than JSON. Keyed on `Content-Type`, which is the
+// signal that actually distinguishes them — sniffing the body's shape would misread a form field
+// whose value happens to start with `{`.
+fn is_form_request(req: ?Request): bool {
+    return match req {
+        some(r) => (r.header("content-type") ?? "").lower().contains("application/x-www-form-urlencoded"),
+        none => false,
+    }
+}
+
+// Render decoded form fields as a JSON object, so a form body reaches the same typed decode a JSON
+// body does.
+//
+// Every form value arrives as text, but a struct field may be an `int` or a `bool` — so a value
+// that reads as a number or a boolean is emitted as that JSON scalar and everything else is
+// emitted as a quoted string. This is the ordinary form-binder convention; a field genuinely
+// meant to hold the text "true" needs a JSON body.
+fn form_to_json(fields: Map<string, string>): string {
+    mut parts: List<string> = []
+    for key in fields.keys() {
+        parts = parts ~ ["${json.stringify(key)}:${form_scalar(fields.get_or(key, ""))}"]
+    }
+    return "{" ~ parts.join(",") ~ "}"
+}
+
+// One form value as a JSON scalar: `true`/`false` and anything parsing as a number stay bare; the
+// rest is a quoted string.
+fn form_scalar(value: string): string {
+    if value == "true" || value == "false" {
+        return value
+    }
+    if value.to_int() != none {
+        return value
+    }
+    if value.to_float() != none {
+        return value
+    }
+    return json.stringify(value)
 }
