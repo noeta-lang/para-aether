@@ -431,24 +431,46 @@ fn is_response(ty: Type): bool {
 // accumulates — the one piece of mutable state in the module.
 class Registry {
     mut schemas: Map<string, dyn>
-    mut started: List<string>
+    // The qualified type name → the component name it is published under. Doubles as the visited
+    // set: an entry exists from the moment a type's walk STARTS.
+    mut names: Map<string, string>
 
     fn new(): Registry {
-        return Registry { schemas: {}, started: [] }
+        return Registry { schemas: {}, names: {} }
     }
 
     // Ensure `name`'s schema is defined, and answer the `$ref` that points at it.
     //
-    // `started` is marked BEFORE the fields are walked, not after: a type whose field mentions its
+    // The entry is recorded BEFORE the fields are walked, not after: a type whose field mentions its
     // own type (a tree node, a linked list) would otherwise recurse until the stack ran out. The
     // reference is emitted either way, so the self-reference resolves to the definition in progress
     // — which is exactly what a `$ref` is for.
     fn reference(name: string): Map<string, dyn> {
-        if !self.started.contains(name) {
-            self.started = self.started ~ [name]
-            self.schemas = self.schemas.set(name, object_schema(name, self))
+        if !self.names.has(name) {
+            component = self.component_name(name)
+            self.names = self.names.set(name, component)
+            self.schemas = self.schemas.set(component, object_schema(name, self))
         }
-        return {"$ref": "#/components/schemas/${name}"}
+        return {"$ref": "#/components/schemas/${self.names[name]}"}
+    }
+
+    // What to call a type in `components.schemas`.
+    //
+    // Reflection reports a type fully qualified (`shop.models.PetSummary`) because that is its
+    // identity, but a document is read by people and by generators that turn a component name into
+    // a type name — `PetSummary` is the name the author wrote and the one a generated client should
+    // use. So the last segment wins, unless another module already published a type of that name,
+    // in which case this one keeps its qualified spelling rather than silently overwriting a schema
+    // that describes something else.
+    fn component_name(type_name: string): string {
+        parts = type_name.split(".")
+        leaf = if parts.len() > 0 then parts[parts.len() - 1] else type_name
+        for taken in self.names.keys() {
+            if self.names[taken] == leaf {
+                return type_name
+            }
+        }
+        return leaf
     }
 
     fn all(): Map<string, dyn> {
