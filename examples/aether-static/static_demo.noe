@@ -1,0 +1,46 @@
+// Static assets: aether serves a mounted directory for GETs that match no route. The framework
+// layer owns this because it owns the router and the fall-through — "no route matched, try the
+// filesystem" is a routing decision, not a templating one.
+//
+//   cd examples/aether-static && noeta run static_demo.noe
+//
+// expect: stdout "route: ok"
+// expect: stdout "css: text/css; charset=utf-8 | body { color: rebeccapurple }"
+// expect: stdout "nested: hello from a static file"
+// expect: stdout "missing: 404"
+// expect: stdout "traversal: 404"
+// expect: stdout "encoded traversal: 404"
+// expect: exit 0
+use para.aether.{App, Get}
+use std.http.server
+
+class HealthController {
+    fn new(): HealthController { return HealthController {} }
+
+    #[Get("/health")]
+    fn health(): string { return "ok" }
+}
+
+app = App.new()
+app.register("HealthController", HealthController.new())
+app.discover()
+app.serve_files("public")
+
+// A real route still wins — the static mount is only the fall-through.
+echo "route: ${app.handle("GET", "/health", "")}"
+
+// A file under the mount is served with a Content-Type derived from its extension.
+css = app.respond("GET", "/site.css", "")
+echo "css: ${css.header("content-type") ?? "none"} | ${css.body().trim()}"
+
+// Nested paths work.
+echo "nested: ${app.handle("GET", "/assets/note.txt", "").trim()}"
+
+// A path naming no file is an ordinary 404 — the mount does not swallow unmatched routes.
+echo "missing: ${app.respond("GET", "/nope.css", "").status()}"
+
+// The load-bearing guard: a request path is attacker-controlled, so `..` must not escape the
+// mount. The segment is refused outright rather than normalized.
+echo "traversal: ${app.respond("GET", "/../../etc/passwd", "").status()}"
+// And percent-encoding it does not get around the rule, because the path is decoded first.
+echo "encoded traversal: ${app.respond("GET", "/%2e%2e/%2e%2e/etc/passwd", "").status()}"

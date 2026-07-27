@@ -11,6 +11,7 @@
 
 namespace para.aether
 
+use std.fs
 use std.http.server
 use std.http.{Request, Response}
 use std.json
@@ -324,11 +325,12 @@ pub class App {
     mut bound: List<string> // model type names that are route-bound (loaded from the store by id)
     mut store: dyn Store // the data-store seam (a NullStore until an app configures one)
     mut services: Map<string, dyn> // the service container: concrete instances keyed by interface (short trait name)
+    mut static_dir: string // filesystem root served for unmatched GETs ("" = no static mount)
     config: Config
 
     fn new(): App {
         store = NullStore.new()
-        app = App { routes: [], controllers: {}, middleware: [], bound: [], store: store, services: {}, config: Config.new() }
+        app = App { routes: [], controllers: {}, middleware: [], bound: [], store: store, services: {}, static_dir: "", config: Config.new() }
         // The data `Store` is a service like any other — registered under `Store` so a `dyn Store`
         // parameter resolves through the same container. `set_store` keeps this entry in step with the
         // typed `store` field the flush/route-model path calls through.
@@ -408,6 +410,13 @@ pub class App {
         self.routes = table
     }
 
+    // Mount a directory of static assets, served for GETs that match no route. This is the
+    // framework's job rather than the templating package's: aether owns the router and the
+    // fall-through, and "no route matched, try the filesystem" is a routing decision.
+    fn serve_files(dir: string): void {
+        self.static_dir = dir
+    }
+
     // The string-testable entry point: resolve + dispatch, then hand back the response *body* as a
     // plain string. It exists so an app can drive its whole DI + route-model-binding path with no
     // server (`app.handle("POST", "/users", body)`); the reply's status and headers are the server
@@ -417,6 +426,12 @@ pub class App {
     // so a handler that declares a `Request` parameter is exercised through `serve`, not this call.
     fn handle(method: string, path: string, body: string): string {
         return self.resolve(method, path, body, none).body()
+    }
+
+    // The `Response`-returning twin of `handle`, for when the status or a header is the point —
+    // a static asset's `Content-Type`, a 404, a redirect. Same resolution, no projection.
+    fn respond(method: string, path: string, body: string): Response {
+        return self.resolve(method, path, body, none)
     }
 
     // The route-matching core shared by the string path (`handle`, an absent request) and the server
@@ -434,7 +449,54 @@ pub class App {
                 }
             }
         }
+        // No route matched. If a static mount is configured, a GET may still be a file on disk —
+        // the "no route matched, try the filesystem" step every web framework ends up owning.
+        if method == "GET" && self.static_dir != "" {
+            hit = self.static_file(path)
+            if hit != none {
+                return hit ?? server.response(404, "404 Not Found")
+            }
+        }
         return server.response(404, "404 Not Found")
+    }
+
+    // Serve `path` from the static mount, or `none` when it names no file there.
+    //
+    // The load-bearing part is the traversal guard: a request path is attacker-controlled, so
+    // `/../../etc/passwd` must not escape the mount. Rather than normalizing (and re-deriving
+    // every trick that defeats normalization), any segment that is `..` — or empty, or `.` —
+    // rejects the request outright, and the rebuilt path is joined from the segments that
+    // survived. A percent-encoded `%2e%2e` is decoded FIRST, so it is caught by the same rule.
+    fn static_file(path: string): ?Response {
+        decoded = server.url_decode(path)
+        mut parts: List<string> = []
+        for seg in decoded.split("/") {
+            if seg == "" {
+                continue
+            }
+            if seg == "." || seg == ".." {
+                return none
+            }
+            // A backslash segment would be a path separator on some hosts; refuse rather than guess.
+            if seg.contains("\\") {
+                return none
+            }
+            parts = parts ~ [seg]
+        }
+        if parts.len() == 0 {
+            return none
+        }
+        file = self.static_dir ~ "/" ~ parts.join("/")
+        if !fs.exists(file) {
+            return none
+        }
+        ct = content_type(parts[parts.len() - 1])
+        // Text is served as text and binary as bytes, so a response body reads back as what the
+        // file actually is (`.body()` on a bytes response renders as a byte count, not content).
+        if is_text(ct) {
+            return some(server.response(200, fs.read(file), { "content-type": ct }))
+        }
+        return some(server.response(200, fs.read_bytes(file), { "content-type": ct }))
     }
 
     // Dispatch a matched route: look up its controller instance and invoke the action with the
@@ -558,4 +620,34 @@ pub class App {
     fn serve(port: int): void {
         server.serve(port, self.route)
     }
+}
+
+// The `Content-Type` for a filename, by extension. Deliberately a small, explicit table rather
+// than a guess: an unknown extension serves as `application/octet-stream`, which a browser
+// downloads instead of interpreting — the safe default for a file the framework cannot classify.
+fn content_type(name: string): string {
+    lower = name.lower()
+    if lower.ends_with(".html") || lower.ends_with(".htm") { return "text/html; charset=utf-8" }
+    if lower.ends_with(".css") { return "text/css; charset=utf-8" }
+    if lower.ends_with(".js") || lower.ends_with(".mjs") { return "text/javascript; charset=utf-8" }
+    if lower.ends_with(".json") { return "application/json" }
+    if lower.ends_with(".svg") { return "image/svg+xml" }
+    if lower.ends_with(".png") { return "image/png" }
+    if lower.ends_with(".jpg") || lower.ends_with(".jpeg") { return "image/jpeg" }
+    if lower.ends_with(".gif") { return "image/gif" }
+    if lower.ends_with(".webp") { return "image/webp" }
+    if lower.ends_with(".ico") { return "image/x-icon" }
+    if lower.ends_with(".woff2") { return "font/woff2" }
+    if lower.ends_with(".woff") { return "font/woff" }
+    if lower.ends_with(".txt") { return "text/plain; charset=utf-8" }
+    if lower.ends_with(".xml") { return "application/xml" }
+    if lower.ends_with(".pdf") { return "application/pdf" }
+    return "application/octet-stream"
+}
+
+// Whether a `Content-Type` names text — the ones whose bodies are meaningful as strings. Keyed on
+// the type the table above produced, so the two stay in step.
+fn is_text(ct: string): bool {
+    return ct.starts_with("text/") || ct.starts_with("application/json")
+        || ct.starts_with("application/xml") || ct.starts_with("image/svg+xml")
 }
