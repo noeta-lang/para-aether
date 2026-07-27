@@ -39,11 +39,17 @@ struct Route {
     action: string // "create"
 }
 
-// The controller + action a `"Controller.action"` target names.
+// The controller + action a `"Controller.action"` target names — read from the END of the path, so
+// a controller declared in a file with a `namespace` works too. Reflection reports a target
+// fully qualified (`todo.main.StatusController.health` for a class in `namespace todo.main`), and
+// taking the first two segments read the *namespace* as the controller — every route in a
+// namespaced app then dispatched to a controller nobody registered ("500 no controller todo").
+// The class and the method are always the last two segments, namespace or not.
 fn split_target(target: string): Route {
     parts = target.split(".")
-    controller = if parts.len() > 0 then parts[0] else ""
-    action = if parts.len() > 1 then parts[1] else ""
+    n = parts.len()
+    controller = if n > 1 then parts[n - 2] else ""
+    action = if n > 0 then parts[n - 1] else ""
     return Route { method: "", path: "", controller: controller, action: action }
 }
 
