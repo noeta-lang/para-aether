@@ -99,6 +99,8 @@ fn info(): openapi.Info {
 }
 
 app = build()
+// Serve the document as an ordinary route, and describe it in the document like any other.
+openapi.expose(app, "/openapi.json", info())
 echo openapi.document(app, info())
 echo app.handle("GET", "/notes", "")
 echo app.handle("GET", "/notes/7", "")
@@ -232,6 +234,17 @@ echo app.handle("DELETE", "/notes/7", "")
         assert(note.contains("\"boolean\""))
         // Every field of `Note` is mandatory, so every field is required.
         assert(note.contains("\"required\""))
+    }
+
+    fn the_spec_route_serves_the_document_and_describes_itself(): void {
+        app = build()
+        openapi.expose(app, "/openapi.json", info())
+        body = app.handle("GET", "/openapi.json", "")
+        assert(body.contains("\"openapi\":\"3.1.0\""))
+        assert(body.contains("/notes/{id}"))
+        // It is an endpoint this API has, so it appears in its own document — no special case for
+        // the framework's own route, and nothing hidden from a client generated off the spec.
+        assert(body.contains("/openapi.json"))
     }
 
     fn the_document_is_deterministic(): void {

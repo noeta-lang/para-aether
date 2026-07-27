@@ -78,7 +78,7 @@ pub struct Status {
 pub fn expose(app: App, path: string, info: Info): void {
     ctrl = SpecController.new(app, info)
     app.register("SpecController", ctrl)
-    app.add_route(aether.route_for("GET", "${qualified(ctrl)}.render", path))
+    app.add_route(aether.route_for("GET", "${qualified(ctrl)}.openapi", path))
 }
 
 // The reflection target of a value's own class — fully qualified, which is what `params_of` and
@@ -107,7 +107,7 @@ pub class SpecController {
 
     // Built per request, not cached: a route added after this controller was registered must still
     // appear, and the document costs a reflection walk over a table with tens of rows.
-    fn render(): Response {
+    fn openapi(): Response {
         return server.response(200, document(self.app, self.info), {"content-type": "application/json"})
     }
 }
