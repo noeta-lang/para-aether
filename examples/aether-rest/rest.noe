@@ -5,6 +5,8 @@
 // Nothing here registers a route, decodes a body, or reads a URL by hand — the whole wiring is the
 // `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
 use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider}
+use para.aether.openapi
+use std.json
 
 @derive(Serialize<Json>)
 struct Note {
@@ -92,7 +94,12 @@ fn build(): App {
     return app
 }
 
+fn info(): openapi.Info {
+    return openapi.Info { title: "Notes", version: "1.0.0" }
+}
+
 app = build()
+echo openapi.document(app, info())
 echo app.handle("GET", "/notes", "")
 echo app.handle("GET", "/notes/7", "")
 echo app.handle("DELETE", "/notes/7", "")
@@ -143,4 +150,106 @@ echo app.handle("DELETE", "/notes/7", "")
         app = build()
         assert(app.handle("GET", "/notes/1/tags/for%20sale", "") == "note 1 tagged for sale")
     }
+
+    // --- The document the app already contains. -------------------------------------------------
+    //
+    // Every assertion below is a fact stated exactly once in the source above — in an attribute or a
+    // signature — and read back out of the generated document. That the two agree is not a
+    // coincidence to be maintained; it is the same fact, projected.
+
+    fn the_document_names_every_route_and_verb(): void {
+        doc = openapi.document(build(), info())
+        assert(doc.contains("\"/notes\""))
+        assert(doc.contains("\"/notes/{id}\""))
+        assert(doc.contains("\"/notes/{id}/tags/{tag}\""))
+        // One path, several verbs — the table is flat and the document is not.
+        assert(doc.contains("\"get\""))
+        assert(doc.contains("\"put\""))
+        assert(doc.contains("\"patch\""))
+        assert(doc.contains("\"delete\""))
+        assert(doc.contains("\"post\""))
+        assert(doc.contains("\"openapi\":\"3.1.0\""))
+    }
+
+    fn a_path_parameter_is_reported_required_and_typed(): void {
+        spec = openapi.spec(build(), info())
+        show = operation(spec, "/notes/{id}", "get")
+        params = show["parameters"].as<List<dyn>>() ?? []
+        assert(params.len() == 1)
+        p = params[0].as<Map<string, dyn>>() ?? {}
+        assert(p["name"].as<string>() == some("id"))
+        assert(p["in"].as<string>() == some("path"))
+        // Required by construction: the route does not match without it.
+        assert(p["required"].as<bool>() == some(true))
+        assert(json.stringify(p["schema"]).contains("integer"))
+    }
+
+    fn an_optional_query_parameter_is_reported_optional(): void {
+        spec = openapi.spec(build(), info())
+        index = operation(spec, "/notes", "get")
+        names = (index["parameters"].as<List<dyn>>() ?? []).map(param_name)
+        assert(names.contains("done"))
+        assert(names.contains("limit"))
+        for p in index["parameters"].as<List<dyn>>() ?? [] {
+            entry = p.as<Map<string, dyn>>() ?? {}
+            assert(entry["in"].as<string>() == some("query"))
+            // `?T` — absent is a legitimate request, and the document says so.
+            assert(entry["required"].as<bool>() == some(false))
+        }
+    }
+
+    fn a_body_parameter_becomes_a_request_body_not_a_query_parameter(): void {
+        spec = openapi.spec(build(), info())
+        create = operation(spec, "/notes", "post")
+        assert(create.has("requestBody"))
+        // The body struct is a `$ref` into components, defined once for every operation that takes
+        // it.
+        assert(json.stringify(create["requestBody"]).contains("#/components/schemas/NewNote"))
+        assert(!create.has("parameters"))
+    }
+
+    fn the_response_schema_is_the_handlers_return_type(): void {
+        spec = openapi.spec(build(), info())
+        // `fn show(id: int): Note` — the schema is `Note`, because that is what the code says.
+        show = operation(spec, "/notes/{id}", "get")
+        assert(json.stringify(show["responses"]).contains("#/components/schemas/Note"))
+        // `fn index(...): List<Note>` — an array of it.
+        index = operation(spec, "/notes", "get")
+        assert(json.stringify(index["responses"]).contains("\"type\":\"array\""))
+        // `fn destroy(id: int): string` — a string reply is `text/plain`, which is what the router
+        // actually sends.
+        destroy = operation(spec, "/notes/{id}", "delete")
+        assert(json.stringify(destroy["responses"]).contains("text/plain"))
+    }
+
+    fn component_schemas_come_from_the_declared_fields(): void {
+        spec = openapi.spec(build(), info())
+        components = spec["components"].as<Map<string, dyn>>() ?? {}
+        schemas = components["schemas"].as<Map<string, dyn>>() ?? {}
+        note = json.stringify(schemas["Note"])
+        assert(note.contains("\"id\""))
+        assert(note.contains("\"integer\""))
+        assert(note.contains("\"boolean\""))
+        // Every field of `Note` is mandatory, so every field is required.
+        assert(note.contains("\"required\""))
+    }
+
+    fn the_document_is_deterministic(): void {
+        // Byte-identical from one run to the next, so a generated spec can be committed and the
+        // diff means something.
+        assert(openapi.document(build(), info()) == openapi.document(build(), info()))
+    }
+}
+
+// Reach one operation out of a generated document — the two-level `paths[path][verb]` walk the
+// assertions above share.
+fn operation(spec: Map<string, dyn>, path: string, verb: string): Map<string, dyn> {
+    paths = spec["paths"].as<Map<string, dyn>>() ?? {}
+    verbs = paths[path].as<Map<string, dyn>>() ?? {}
+    return verbs[verb].as<Map<string, dyn>>() ?? {}
+}
+
+fn param_name(p: dyn): string {
+    entry = p.as<Map<string, dyn>>() ?? {}
+    return entry["name"].as<string>() ?? ""
 }

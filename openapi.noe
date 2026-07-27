@@ -1,0 +1,563 @@
+// para.aether.openapi — the OpenAPI document an app already contains.
+//
+// A spec is not a thing you write beside a web application; it is a *projection* of it. Every fact
+// an OpenAPI document states — which paths exist, which verb reaches each one, what a path or query
+// parameter is called and what type it has, what shape the request body decodes into, what the
+// handler answers — is something the program already declares and the compiler already knows. So
+// this module writes none of it down a second time: it reads the app's own route table and the
+// reflected signature of every handler behind it.
+//
+//     use para.aether.openapi
+//
+//     echo openapi.document(app, openapi.Info { title: "Notes", version: "1.0.0" })
+//
+// The rule the whole module follows: **an attribute only where reflection cannot reach.** A route's
+// method, path, operation name, parameters (name, location, type, required-ness), request body
+// schema and response schema are all derived. What is left over is genuinely outside the program's
+// types — the document's title and version, a non-200 status code, a human summary — and only those
+// have an attribute or an argument.
+//
+// The generated document is OpenAPI 3.1. A `?T` is `anyOf: [T, null]` rather than 3.0's `nullable`,
+// which is exactly why 3.1: Noeta's optionality is a type, and 3.1 is the version whose schema
+// vocabulary can say so.
+
+namespace para.aether.openapi
+
+use para.aether
+use para.aether.{App, Route}
+use std.http.server
+use std.http.Response
+use std.json
+
+// The document-level facts no signature can carry: what this API is called and which version of it
+// this is. `servers` is the list of base URLs the paths are relative to — one entry is the common
+// case, and an empty list means "relative to wherever this is served from", which is what OpenAPI
+// itself defaults to.
+pub struct Info {
+    title: string
+    version: string
+    description: string = ""
+    servers: List<string> = []
+}
+
+// A handler's human-facing summary, for the rare case the code cannot say it.
+//
+// This exists because prose is the one part of a document that is genuinely not derivable: a
+// `@doc` block IS read when the doc tier is live (see `summaries`), and this attribute is what an
+// app reaches for when it wants a one-line summary in an ordinary production build, where doc
+// blocks are stripped. Deliberately the ONLY route-metadata attribute: everything else the
+// generator needs, it reads off the signature.
+@attribute(Method)
+pub struct Summary {
+    text: string
+    description: string = ""
+}
+
+// The status code a handler's successful reply carries, when it is not 200.
+//
+// A handler that returns a value cannot say "201" in its type — the status is a property of the
+// reply, and a handler returning a bare value has delegated the reply to the framework. A handler
+// that builds its own `Response` is already saying it in code, and this attribute is how it says it
+// to the document as well.
+@attribute(Method)
+pub struct Status {
+    code: int
+    description: string = "OK"
+}
+
+// Serve this app's own document at `path`.
+//
+// The route is added at runtime rather than declared with `#[Get]`, because the URL is the
+// application's choice and an attribute takes a literal. Everything else is ordinary: a controller
+// is registered and a row joins the table, so the spec endpoint is dispatched, middlewared and
+// reported by exactly the machinery every other route is — including appearing in the document it
+// serves, which it should, since it is an endpoint this API has.
+//
+// Call it AFTER `discover()`: the document is built per request from the live route table, so the
+// order only decides whether the endpoint exists, never what it reports.
+pub fn expose(app: App, path: string, info: Info): void {
+    ctrl = SpecController.new(app, info)
+    app.register("SpecController", ctrl)
+    app.add_route(aether.route_for("GET", "${qualified(ctrl)}.render", path))
+}
+
+// The reflection target of a value's own class — fully qualified, which is what `params_of` and
+// `returns_of` are keyed by. Read off the value rather than written as a literal: a consumer binds
+// this package under an import root of their choosing, and the linker re-roots every namespace to
+// it, so `"para.aether.openapi.SpecController"` is only correct for consumers who happened to key
+// it `para`.
+fn qualified(value: dyn): string {
+    return match type_of(value) {
+        Type.Class(name, _) => name,
+        Type.Struct(name, _) => name,
+        _ => "",
+    }
+}
+
+// The handler behind `expose`. It holds the app it describes, which is a cycle — the app owns the
+// controller, the controller reads the app's table — and an ordinary one: both are classes, so the
+// collector handles it.
+pub class SpecController {
+    app: App
+    info: Info
+
+    fn new(app: App, info: Info): SpecController {
+        return SpecController { app: app, info: info }
+    }
+
+    // Built per request, not cached: a route added after this controller was registered must still
+    // appear, and the document costs a reflection walk over a table with tens of rows.
+    fn render(): Response {
+        return server.response(200, document(self.app, self.info), {"content-type": "application/json"})
+    }
+}
+
+// The whole document as JSON — what a `/openapi.json` route serves and what a client generator
+// (`@openapi("spec.json")`) consumes.
+pub fn document(app: App, info: Info): string {
+    return json.stringify(spec(app, info))
+}
+
+// The document as data, for a caller that wants to inspect or amend it before serializing. Keys are
+// emitted through `Map`, whose iteration order is sorted, so the same app always produces byte-
+// identical output — a generated spec can be committed and diffed.
+pub fn spec(app: App, info: Info): Map<string, dyn> {
+    // One registry of named schemas for the whole document, filled as the walk meets struct types
+    // and referenced by `$ref` from every use — so a `Pet` mentioned by four operations is defined
+    // once, which is both what a reader wants and what keeps a recursive type from unrolling
+    // forever.
+    reg = Registry.new()
+    paths = paths_of(app, reg)
+
+    mut doc: Map<string, dyn> = {
+        "openapi": "3.1.0",
+        "info": info_of(info),
+        "paths": paths,
+    }
+    if info.servers.len() > 0 {
+        doc = doc.set("servers", info.servers.map(server_entry))
+    }
+    schemas = reg.all()
+    if schemas.keys().len() > 0 {
+        mut components: Map<string, dyn> = {}
+        doc = doc.set("components", components.set("schemas", schemas))
+    }
+    return doc
+}
+
+// One `servers[]` entry. A named function rather than a closure literal, because a lambda whose
+// body opens with `{` reads as a block, not a map.
+fn server_entry(url: string): Map<string, dyn> {
+    return {"url": url}
+}
+
+fn info_of(info: Info): Map<string, dyn> {
+    mut out: Map<string, dyn> = {"title": info.title, "version": info.version}
+    if info.description != "" {
+        out = out.set("description", info.description)
+    }
+    return out
+}
+
+// --- The paths object: one entry per route, one operation per verb. -----------------------------
+
+// Group the app's route table by path, since OpenAPI keys paths first and verbs second while a
+// route table is a flat list. Two routes on the same path with the same verb cannot both be served
+// — the first registered wins in the router — so the first is what the document states.
+fn paths_of(app: App, reg: Registry): Map<string, dyn> {
+    table = app.route_table()
+    docs = summaries()
+    mut out: Map<string, dyn> = {}
+    for r in table {
+        verbs = if out.has(r.path) then out[r.path].as<Map<string, dyn>>() ?? {} else {}
+        key = r.method.lower()
+        if !verbs.has(key) {
+            out = out.set(r.path, verbs.set(key, operation(r, table, docs, reg)))
+        }
+    }
+    return out
+}
+
+// One route as an OpenAPI operation.
+fn operation(r: Route, table: List<Route>, docs: Map<string, string>, reg: Registry): Map<string, dyn> {
+    mut op: Map<string, dyn> = {
+        "operationId": operation_id(r, table),
+        // The controller is the natural grouping — it is how the author already grouped these
+        // handlers — so it is the tag, with no attribute asking for one.
+        "tags": [r.controller],
+        "responses": responses(r, reg),
+    }
+
+    // Prose, in the order of how specific it is: an explicit `#[Summary]`, else the `@doc` block if
+    // the doc tier is live, else nothing. A document with no summary is honest; an invented one is
+    // not.
+    match summary_attr(r) {
+        some(s) => {
+            op = op.set("summary", s.text)
+            if s.description != "" {
+                op = op.set("description", s.description)
+            }
+        },
+        none => {
+            if docs.has(r.target) {
+                op = op.set("description", docs[r.target])
+            }
+        },
+    }
+
+    params = parameters(r, reg)
+    if params.len() > 0 {
+        op = op.set("parameters", params)
+    }
+    match request_body(r, reg) {
+        some(body) => { op = op.set("requestBody", body) },
+        none => {},
+    }
+    return op
+}
+
+// The operation's name. `action` alone when no other controller declares a handler of that name —
+// `show`, `index`, `create` read well in a generated client — and `controller_action` when two do,
+// because a generated client cannot have two methods of one name and silently losing one is the
+// failure nobody notices.
+fn operation_id(r: Route, table: List<Route>): string {
+    mut seen = 0
+    for other in table {
+        if other.action == r.action {
+            seen = seen + 1
+        }
+    }
+    return if seen > 1 then "${snake(r.controller)}_${r.action}" else r.action
+}
+
+// `UsersController` → `users`. The `Controller` suffix is noise in an operation id: it is the same
+// word on every controller in the app.
+fn snake(name: string): string {
+    trimmed = if name.ends_with("Controller") then name.slice(0, name.len() - 10) else name
+    mut out = ""
+    mut i = 0
+    for ch in trimmed.chars() {
+        lower = ch.lower()
+        if ch != lower && i > 0 {
+            out = out ~ "_"
+        }
+        out = out ~ lower
+        i = i + 1
+    }
+    return out
+}
+
+// Every handler parameter that is part of the API's surface, as an OpenAPI parameter object.
+//
+// The mapping is the injection rule read the other way round, which is why the two cannot drift: a
+// name that is a `{…}` of the route is `in: path`; any other scalar is `in: query`; a `?T` is
+// optional and everything else is required. A `dyn Trait` service, the live `Request`, and the body
+// struct are not parameters at all — they are how the handler is *served*, not what a caller sends.
+fn parameters(r: Route, reg: Registry): List<dyn> {
+    mut out: List<dyn> = []
+    for p in params_of(r.target) {
+        if is_scalarish(p.type) {
+            in_path = r.path_params.contains(p.name)
+            mut param: Map<string, dyn> = {
+                "name": p.name,
+                "in": if in_path then "path" else "query",
+                // A path parameter is required by construction: the route does not match without
+                // it, whatever the handler's declaration says.
+                "required": in_path || !(is_option(p.type) || p.optional),
+                "schema": schema_of(unwrap_option(p.type), reg),
+            }
+            out = out ~ [param]
+        }
+    }
+    return out
+}
+
+// The request body, when the handler declares a parameter that is decoded from one. A nominal
+// parameter that is not the live `Request` is exactly that — the same test `arg_for` makes.
+fn request_body(r: Route, reg: Registry): ?Map<string, dyn> {
+    for p in params_of(r.target) {
+        match body_type_name(p.type) {
+            some(name) => {
+                mut body: Map<string, dyn> = {"required": true}
+                return some(body.set("content", content_of("application/json", reg.reference(name))))
+            },
+            none => {},
+        }
+    }
+    return none
+}
+
+// The response object. The status is 200 unless the handler declared otherwise with `#[Status]`,
+// and the schema is the handler's declared RETURN TYPE — the fact that makes this generator a
+// projection of the code rather than a description of it.
+//
+// A handler returning `Response` has taken the reply into its own hands, so its shape is not in the
+// type system and the document says only that there is one. A `void` handler answers no content.
+fn responses(r: Route, reg: Registry): Map<string, dyn> {
+    (code, description) = match status_attr(r) {
+        some(s) => ("${s.code}", s.description),
+        none => ("200", "OK"),
+    }
+    ret = returns_of(r.target)
+    mut reply: Map<string, dyn> = {"description": description}
+    match ret {
+        some(ty) => {
+            if !is_unit(ty) && !is_response(ty) {
+                reply = reply.set("content", content_of("application/json", schema_of(ty, reg)))
+            }
+            // A handler declared to return a bare `string` replies `text/plain` (that is what
+            // `coerce_response` does), so the document must say so rather than claim JSON.
+            if is_string(ty) {
+                reply = {"description": description}
+                reply = reply.set("content", content_of("text/plain", string_schema()))
+            }
+        },
+        none => {},
+    }
+    mut out: Map<string, dyn> = {}
+    return out.set(code, reply)
+}
+
+// One `content` object: a media type and the schema of what it carries.
+fn content_of(media: string, schema: Map<string, dyn>): Map<string, dyn> {
+    mut body: Map<string, dyn> = {"schema": schema}
+    mut out: Map<string, dyn> = {}
+    return out.set(media, body)
+}
+
+fn string_schema(): Map<string, dyn> {
+    return {"type": "string"}
+}
+
+// --- Reading the two attributes, and the doc tier. ----------------------------------------------
+
+// The `#[Summary]` on this route's handler, if any. `attributes_of` is a program-wide query keyed by
+// type, so the join back to one handler is on the target — the same key `params_of` uses.
+fn summary_attr(r: Route): ?Summary {
+    for a in attributes_of::<Summary>() {
+        if a.target == r.target {
+            return some(a.value)
+        }
+    }
+    return none
+}
+
+fn status_attr(r: Route): ?Status {
+    for a in attributes_of::<Status>() {
+        if a.target == r.target {
+            return some(a.value)
+        }
+    }
+    return none
+}
+
+// Every `@doc` block in the program, by target — the descriptions, taken from the documentation the
+// author already wrote instead of asking for them again.
+//
+// `@doc` is a dev TIER: it is stripped from an ordinary build, and stamped onto its declaration as
+// `#[std.doc.Doc]` when the tier is live. So this returns the docs under `--tier doc` (or a target
+// that makes `doc` live) and an empty map otherwise — the document then simply carries no
+// descriptions, which is the correct answer for a build that does not contain them.
+fn summaries(): Map<string, string> {
+    mut out: Map<string, string> = {}
+    for a in attributes_of::<std.doc.Doc>() {
+        out = out.set(a.target, a.value.text.trim())
+    }
+    return out
+}
+
+// --- Type predicates the two walks share. -------------------------------------------------------
+
+// Whether a parameter is one a caller supplies in the URL — the scalars and their optional forms.
+// Anything else (a `dyn` service, the `Request`, a body struct) is not part of the URL.
+fn is_scalarish(ty: Type): bool {
+    return match unwrap_option(ty) {
+        Type.String => true,
+        Type.Int => true,
+        Type.IntN(_, _) => true,
+        Type.Float => true,
+        Type.F32 => true,
+        Type.F64 => true,
+        Type.Bool => true,
+        _ => false,
+    }
+}
+
+// The type name a nominal parameter decodes a body into, or `none` when the parameter is not one.
+fn body_type_name(ty: Type): ?string {
+    return match ty {
+        Type.Struct(name, _) => some(name),
+        Type.Class(name, _) => some(name),
+        // `Request` reflects as a bare `Named` — the live request, injected, never sent.
+        Type.Named(name, _) => if name == "Request" then none else some(name),
+        _ => none,
+    }
+}
+
+fn unwrap_option(ty: Type): Type {
+    return match ty {
+        Type.Option(inner) => inner,
+        _ => ty,
+    }
+}
+
+fn is_unit(ty: Type): bool {
+    return match ty {
+        Type.Unit => true,
+        _ => false,
+    }
+}
+
+fn is_string(ty: Type): bool {
+    return match ty {
+        Type.String => true,
+        _ => false,
+    }
+}
+
+// A handler that returns the framework's own `Response` has built the reply itself; its shape is
+// not in the type system, so the document states the response exists and stops there.
+fn is_response(ty: Type): bool {
+    return match ty {
+        Type.Named(name, _) => name == "Response",
+        _ => false,
+    }
+}
+
+// --- The named-schema registry. -----------------------------------------------------------------
+
+// The `components.schemas` half of the document, plus the visited set that makes a recursive type
+// terminate. A class rather than a struct because it is threaded through the whole walk and
+// accumulates — the one piece of mutable state in the module.
+class Registry {
+    mut schemas: Map<string, dyn>
+    mut started: List<string>
+
+    fn new(): Registry {
+        return Registry { schemas: {}, started: [] }
+    }
+
+    // Ensure `name`'s schema is defined, and answer the `$ref` that points at it.
+    //
+    // `started` is marked BEFORE the fields are walked, not after: a type whose field mentions its
+    // own type (a tree node, a linked list) would otherwise recurse until the stack ran out. The
+    // reference is emitted either way, so the self-reference resolves to the definition in progress
+    // — which is exactly what a `$ref` is for.
+    fn reference(name: string): Map<string, dyn> {
+        if !self.started.contains(name) {
+            self.started = self.started ~ [name]
+            self.schemas = self.schemas.set(name, object_schema(name, self))
+        }
+        return {"$ref": "#/components/schemas/${name}"}
+    }
+
+    fn all(): Map<string, dyn> {
+        return self.schemas
+    }
+}
+
+// A declared type as a JSON Schema object: one property per field, with the fields that must be
+// present listed in `required`.
+//
+// `field_specs_of` answers the empty list for a type it does not know (a native extern, a type
+// parameter), and an empty list here means an object with no stated properties — `{"type":
+// "object"}`, which says "an object, shape unspecified" rather than "an object with no fields".
+// That is the honest reading: reflection did not have the fields, so the document should not claim
+// they are absent.
+fn object_schema(name: string, reg: Registry): Map<string, dyn> {
+    specs = field_specs_of(name)
+    if specs.len() == 0 {
+        return {"type": "object"}
+    }
+    mut props: Map<string, dyn> = {}
+    mut required: List<string> = []
+    for f in specs {
+        props = props.set(f.name, schema_of(f.type, reg))
+        // `optional` is "the field declared a default", and a `?T` field may simply be absent.
+        // Everything else must be there, which is precisely `required`.
+        if !f.optional && !is_option(f.type) {
+            required = required ~ [f.name]
+        }
+    }
+    mut out: Map<string, dyn> = {"type": "object", "properties": props}
+    if required.len() > 0 {
+        out = out.set("required", required)
+    }
+    return out
+}
+
+// --- Types → JSON Schema. -----------------------------------------------------------------------
+
+// One reflected `Type` as a JSON Schema. Every arm is a fact the compiler already had; nothing here
+// is configurable, because a schema that disagrees with the signature is worse than no schema.
+fn schema_of(ty: Type, reg: Registry): Map<string, dyn> {
+    return match ty {
+        Type.Int => {"type": "integer"},
+        Type.IntN(bits, signed) => int_schema(bits, signed),
+        Type.Float => {"type": "number"},
+        Type.F64 => {"type": "number", "format": "double"},
+        Type.F32 => {"type": "number", "format": "float"},
+        Type.Bool => {"type": "boolean"},
+        Type.String => {"type": "string"},
+        Type.Bytes => {"type": "string", "format": "byte"},
+        Type.Unit => {"type": "null"},
+        Type.List(inner) => array_schema(schema_of(inner, reg), false),
+        Type.Set(inner) => array_schema(schema_of(inner, reg), true),
+        Type.Map(_, value) => map_schema(schema_of(value, reg)),
+        // 3.1's way to say "or absent": a union with the null type. 3.0's `nullable: true` could
+        // not distinguish `?T` from `T`, which is the whole reason this document is 3.1.
+        Type.Option(inner) => nullable_schema(schema_of(inner, reg)),
+        Type.Struct(name, _) => reg.reference(name),
+        Type.Class(name, _) => reg.reference(name),
+        Type.Named(name, _) => reg.reference(name),
+        // A `Result<T, E>` handler answers one or the other; the document states the success shape,
+        // which is what a caller decodes on a 2xx.
+        Type.Result(ok, _) => schema_of(ok, reg),
+        // Anything left is genuinely unconstrained — `dyn`, a union, a function value. An empty
+        // schema is JSON Schema's "any value", which is the true statement here.
+        _ => {},
+    }
+}
+
+// A fixed-width integer's schema. The width is a real constraint on what the endpoint accepts, so
+// it is stated as bounds rather than dropped to a bare `integer` — a client generator can then
+// refuse a value the server would have rejected anyway.
+// The container schemas, each as its own function: a heterogeneous map literal takes its `dyn`
+// value type from the RETURN type it is written against, and that expectation reaches a bare
+// `return` but not the arms of a `match`.
+fn array_schema(items: Map<string, dyn>, unique: bool): Map<string, dyn> {
+    mut out: Map<string, dyn> = {"type": "array", "items": items}
+    if unique {
+        out = out.set("uniqueItems", true)
+    }
+    return out
+}
+
+fn map_schema(values: Map<string, dyn>): Map<string, dyn> {
+    return {"type": "object", "additionalProperties": values}
+}
+
+// An `?T` in 3.1: a union with the null type, which is the version's way of saying "or absent".
+fn nullable_schema(inner: Map<string, dyn>): Map<string, dyn> {
+    return {"anyOf": [inner, null_schema()]}
+}
+
+fn null_schema(): Map<string, dyn> {
+    return {"type": "null"}
+}
+
+fn int_schema(bits: int, signed: bool): Map<string, dyn> {
+    format = if signed then "int${bits}" else "uint${bits}"
+    mut out: Map<string, dyn> = {"type": "integer", "format": format}
+    if !signed {
+        out = out.set("minimum", 0)
+    }
+    return out
+}
+
+fn is_option(ty: Type): bool {
+    return match ty {
+        Type.Option(_) => true,
+        _ => false,
+    }
+}

@@ -80,7 +80,7 @@ pub struct Route {
 // *namespace* for the controller (every route in a namespaced app then dispatched to a controller
 // nobody registered: "500 no controller todo"). The class and the method are always the last two,
 // namespace or not.
-fn route_for(method: string, target: string, path: string): Route {
+pub fn route_for(method: string, target: string, path: string): Route {
     parts = target.split(".")
     n = parts.len()
     return Route {
@@ -634,6 +634,18 @@ pub class App {
             table = table ~ [route_for("DELETE", a.target, a.value.path)]
         }
         self.routes = table
+    }
+
+    // Add a route the attribute scan cannot express: one whose path is decided at runtime.
+    //
+    // `#[Get("/path")]` takes a literal, which is right for an application's own endpoints — a route
+    // that can move at runtime is a route no tool can find. This is the seam for the routes a
+    // *library* contributes on the caller's terms, where the path is the caller's choice: the
+    // generated OpenAPI document at whatever URL the app wants it (`openapi.expose`). Build the row
+    // with `route_for`, so a hand-added route carries the same reflection target every discovered one
+    // does and its handler's parameters are injected identically.
+    fn add_route(r: Route): void {
+        self.routes = self.routes ~ [r]
     }
 
     // The discovered route table, in discovery order. What a spec generator reads: `para.aether`'s

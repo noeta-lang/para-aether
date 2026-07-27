@@ -2,14 +2,17 @@
 
 A first-party web framework for Noeta — controllers, reflection-based routing, dependency injection, middleware, sessions, and background tasks, in pure Noeta over `std.http`.
 
-Controllers are classes whose methods are tagged `#[Get("/path")]` / `#[Post("/path")]`. The `App` autodiscovers those routes by reflection (`attributes_of`), and for each request it reflects the handler's parameters (`params_of`) and injects each one by its declared type — a request body materialized into a typed struct, a bound service, the live `Request` — then dispatches by name (`invoke`). Laravel-style method injection, zero per-handler glue.
+Controllers are classes whose methods are tagged `#[Get("/path")]` / `#[Post("/path")]` / … . The `App` autodiscovers those routes by reflection (`attributes_of`), and for each request it reflects the handler's parameters (`params_of`) and injects each one by its declared type — a path or query parameter parsed to the type it was declared as, a request body materialized into a typed struct, a bound service, the live `Request` — then dispatches by name (`invoke`). Laravel-style method injection, zero per-handler glue.
+
+Because the whole route table is derived, so is its **OpenAPI document**: `para.aether.openapi` reads the same table plus each handler's reflected signature and writes the spec. Nothing is stated twice, so the spec cannot drift from the service.
 
 ## What it provides
 
-One module, `para.aether`:
+Two modules — `para.aether` and `para.aether.openapi`:
 
-- **Routing** — `#[Get(path)]` / `#[Post(path)]` method attributes; `app.discover()` builds the route table by reflection; `app.serve(port)` runs it on the bundled HTTP server.
-- **Dependency injection** — handler parameters are injected by declared type: a typed request body (via `@derive(Deserialize<Json>)`), a service bound with `app.bind(name, service)` (injected at a `dyn`-typed parameter), or the live `Request`.
+- **Routing** — `#[Get(path)]` / `#[Post(path)]` / `#[Put(path)]` / `#[Patch(path)]` / `#[Delete(path)]` method attributes; `app.discover()` builds the route table by reflection; `app.serve(port)` runs it on the bundled HTTP server. Paths capture any number of `{name}` segments.
+- **Dependency injection** — handler parameters are injected by declared type: a path or query parameter of the same **name** parsed to its declared scalar type (`?T` for "may be absent"), a typed request body (via `@derive(Deserialize<Json>)`), a service bound with `app.bind(name, service)` (injected at a `dyn`-typed parameter), or the live `Request`.
+- **OpenAPI generation** — `openapi.document(app, info)` derives the whole 3.1 document from the route table and the handlers' signatures; `openapi.expose(app, "/openapi.json", info)` serves it as an ordinary route.
 - **Service providers** — the `ServiceProvider` trait (`register(app)`) modularizes a feature's wiring; installed with `app.provider(...)`.
 - **Middleware** — the `Middleware`/`Next` onion (`app.use_middleware(...)`): a layer receives the request *and* the rest of the chain, so it can rewrite the request, inspect the response, or short-circuit.
 - **Config** — the `Config` registry: `app.configure(key, value)` / `app.setting(key, fallback)`.
@@ -59,23 +62,28 @@ A `POST /users` with a JSON body arrives at `create` as a typed `CreateUser` —
 
 ## Controllers and routing — the attributes are the route table
 
-`Get` and `Post` are `@attribute(Method)` structs, each carrying a `path`. Register a controller instance under its type name with `app.register("UsersController", UsersController.new())` — the name must match the class, because it is the leading segment of the reflected route target — then `app.discover()` sweeps every `#[Get]` / `#[Post]` in the program into the route table. Routing is exact-segment matching, with one `{param}` capture per pattern:
+`Get`, `Post`, `Put`, `Patch` and `Delete` are `@attribute(Method)` structs, each carrying a `path`. There is one attribute per verb rather than one `#[Route(method: "GET", …)]` because `attributes_of` is a closed-world query **keyed by type** — a verb carried as a string could not be discovered at all, and the same property makes a misspelled `#[Gett]` a compile error instead of a route that never matches.
+
+Register a controller instance under its type name with `app.register("UsersController", UsersController.new())` — the name must match the class, because it is the last-but-one segment of the reflected route target — then `app.discover()` sweeps every route attribute in the program into the table. Routing is exact-segment matching, with any number of `{name}` captures:
 
 ```noeta
-#[Get("/users/{id}")]
-fn show(user: User): string { ... }
+#[Get("/users/{id}/posts/{slug}")]
+fn post(id: int, slug: string): Post { ... }
 ```
 
-The captured segment feeds **route-model binding** (below): it is how a `bind_model`'d parameter gets loaded by id. One positional capture per route is the current slice; named or multiple captures are not supported yet.
+Captures bind **by name**, not by position, so reordering the handler's parameters cannot silently swap them, and each is percent-decoded (`/tags/for%20sale` → `for sale`). The first capture in template order also feeds **route-model binding** (below): it is how a `bind_model`'d parameter gets loaded by id.
 
-A handler's return value becomes the reply at the one point the runtime value exists, so the declared return type may be `string`, `Response`, or `dyn`:
+A handler's return value becomes the reply at the one point the runtime value exists, so the declared return type may be a value type, `string`, `Response`, or `dyn`:
 
 | handler returns | reply |
 | --- | --- |
 | `string` | a `200` with that body, `content-type: text/plain` |
 | `Response` (from `std.http`) | sent verbatim — status and headers survive, so a handler can set a `Set-Cookie` or a `404` itself |
+| anything else | a `200` with the value rendered by `json.stringify`, `content-type: application/json` |
 
-An unmatched path is a `404 Not Found`; a route whose controller was never registered, an invocation error, or a parameter that cannot be injected is a `500` whose body names the problem.
+The third row is what lets a handler be written as `fn show(id: int): Pet` — the shape a caller wants, and the shape the OpenAPI generator reads a response schema off.
+
+An unmatched path is a `404 Not Found`; a route whose controller was never registered, an invocation error, or a parameter that cannot be injected is a `500` whose body names the problem. A path or query parameter that is missing or will not parse is a `400` naming the parameter and the type it had to be — a client error, reported as one.
 
 ## Dependency injection — parameters resolved by declared type
 
@@ -85,8 +93,12 @@ For each request, `App` reflects the matched handler's parameters (`params_of`) 
 | --- | --- |
 | `dyn Trait` | the service registered under that interface with `app.bind(name, service)` |
 | `Request` | the live HTTP request (server path only) |
-| a `bind_model`'d type | the model loaded from the store by the route's `{id}` (see the `Store` seam below) |
+| `string` / `int` / `float` / `f32` / `f64` / `bool` | the route's `{name}` capture, else the query parameter of that name, parsed |
+| `?T` of any of those | the same, injected as `none` when absent instead of failing |
+| a `bind_model`'d type | the model loaded from the store by the route's first `{…}` capture (see the `Store` seam below) |
 | any other struct/class | the request body, decoded via `json.decode_typed` — the type needs `@derive(Deserialize<Json>)` |
+
+Scalars resolve **by name**, path before query — a `{id}` in the template is part of the route's identity, so a client appending `?id=other` cannot redirect a handler that matched on the first one. A required scalar that the request does not carry is a `400`, and `?T` is how a handler says an absent value is a legitimate request. That is the same distinction the generated document reports as `required: true` / `required: false`, from the same declaration.
 
 Services are keyed by the interface's **short trait name**: a `dyn SessionStore` parameter resolves the instance bound as `app.bind("SessionStore", sessions)`, whether the trait was imported from `para.aether` or defined locally. Re-binding a name replaces the service. A `dyn` parameter with no registered service is a *configuration* error, not a client error — the request fails with a `500` naming the interface and how to bind it, rather than silently injecting the wrong thing.
 
@@ -254,9 +266,50 @@ The same nursery shape composes with a full `App` — spawn the workers and hand
 > [!NOTE]
 > There is no live request on the string path, so a handler that declares a `Request` parameter must be exercised through `serve` — `handle` fails it loudly rather than fabricating an empty request. `noeta test` never runs top-level statements, so a file that ends in `app.serve(8080)` is still safe to test.
 
+## OpenAPI — the document the app already contains
+
+A specification is not a second artifact to keep in step with a service; it is a *projection* of it. Every fact an OpenAPI document states — which paths exist, which verb reaches each one, what a parameter is called, where it lives, what type it is and whether it is required, what the request body decodes into, what the handler answers — is something the program already declares and the compiler already knows. `para.aether.openapi` reads those facts back out by reflection and writes the document:
+
+```noeta
+use para.aether.openapi
+
+info = openapi.Info { title: "Pet Proxy", version: "1.0.0", servers: ["http://localhost:8099"] }
+
+app.discover()
+openapi.expose(app, "/openapi.json", info)   // serve it as an ordinary route
+echo openapi.document(app, info)             // or print it, to commit and diff
+```
+
+| document element | derived from |
+| --- | --- |
+| path, HTTP method | the `#[Get]` / `#[Post]` / … attribute |
+| `operationId`, `tags` | the handler's name and its controller's |
+| path parameters | the `{…}` segments of the route, joined to the handler's parameters by name |
+| query parameters | every other scalar parameter of the handler |
+| `required` | the parameter's type — a `?T` is optional, everything else is required; a path parameter always is |
+| parameter and property schemas | the declared types (`int` → `integer`, `List<T>` → an array of `T`, `i32` → `integer/int32`, `?T` → `anyOf: [T, null]`) |
+| `requestBody` | the handler's struct parameter, `$ref`'d into `components.schemas` |
+| response schema | the handler's **return type** (`returns_of`) — a `string` return is `text/plain`, a `Response` is left unstated, a value type is its schema |
+| `components.schemas` | `field_specs_of` on every struct the walk meets, recursively; `required` is the fields that declared neither `?T` nor a default |
+| `description` | the handler's `@doc` block, when the `doc` tier is live |
+
+Two attributes exist for the two facts a signature genuinely cannot carry, and nothing else:
+
+```noeta
+#[Status(201, description: "Created")]     // a created resource answers 201
+#[Summary("Add a pet")]                    // prose, in a build where @doc blocks are stripped
+#[Post("/pets")]
+fn create(body: NewPet): PetSummary { ... }
+```
+
+The document is OpenAPI **3.1** — that version's schema vocabulary is the one that can say `anyOf: [T, null]`, and Noeta's optionality is a type, not a flag. Output is deterministic (map keys are sorted), so a generated spec can be committed and its diff read.
+
+Because the document is generated from the same table the router dispatches against, the loop closes: feed it to [para/api](https://github.com/noeta-lang/para-api)'s `@openapi("spec.json")` directive and you get a typed client for the service, generated from the service.
+
 ## Examples
 
 - [`examples/aether-demo/`](examples/aether-demo) — service providers, DI, routing, and config in one app.
+- [`examples/aether-rest/`](examples/aether-rest) — every verb, path and query parameters injected by name, JSON replies, and the generated OpenAPI document asserted against the code it came from.
 - [`examples/aether-sessions/`](examples/aether-sessions) — request context, `Response` handlers, the middleware onion, and stateless cookie sessions.
 - [`examples/aether-background/`](examples/aether-background) — background jobs and a scheduled tick alongside `serve`.
 
