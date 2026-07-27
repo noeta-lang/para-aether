@@ -303,7 +303,10 @@ fn responses(r: Route, reg: Registry): Map<string, dyn> {
     match ret {
         some(ty) => {
             if !is_unit(ty) && !is_response(ty) {
-                reply = reply.set("content", content_of("application/json", schema_of(ty, reg)))
+                // `unwrap_option`: a `?T` handler's absent answer is the 404 below, so a 200 body is
+                // always the `T`. Stating `anyOf: [T, null]` here would describe a `null` body this
+                // router never sends.
+                reply = reply.set("content", content_of("application/json", schema_of(unwrap_option(ty), reg)))
             }
             // A handler declared to return a bare `string` replies `text/plain` (that is what
             // `coerce_response` does), so the document must say so rather than claim JSON.
@@ -315,7 +318,14 @@ fn responses(r: Route, reg: Registry): Map<string, dyn> {
         none => {},
     }
     mut out: Map<string, dyn> = {}
-    return out.set(code, reply)
+    out = out.set(code, reply)
+    // A handler declared `?T` says its answer may be absent, and the router turns an absent answer
+    // into a 404 — so the document states both, from the one declaration.
+    if is_option(ret ?? Type.Dyn) {
+        mut missing: Map<string, dyn> = {"description": "Not Found"}
+        out = out.set("404", missing)
+    }
+    return out
 }
 
 // One `content` object: a media type and the schema of what it carries.

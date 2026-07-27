@@ -80,6 +80,7 @@ A handler's return value becomes the reply at the one point the runtime value ex
 | `string` | a `200` with that body, `content-type: text/plain` |
 | `Response` (from `std.http`) | sent verbatim — status and headers survive, so a handler can set a `Set-Cookie` or a `404` itself |
 | anything else | a `200` with the value rendered by `json.stringify`, `content-type: application/json` |
+| `none` (from a `?T` handler) | a `404 Not Found` — "may be absent" is what the type says, and 404 is what HTTP calls absent |
 
 The third row is what lets a handler be written as `fn show(id: int): Pet` — the shape a caller wants, and the shape the OpenAPI generator reads a response schema off.
 
@@ -290,6 +291,7 @@ echo openapi.document(app, info)             // or print it, to commit and diff
 | parameter and property schemas | the declared types (`int` → `integer`, `List<T>` → an array of `T`, `i32` → `integer/int32`, `?T` → `anyOf: [T, null]`) |
 | `requestBody` | the handler's struct parameter, `$ref`'d into `components.schemas` |
 | response schema | the handler's **return type** (`returns_of`) — a `string` return is `text/plain`, a `Response` is left unstated, a value type is its schema |
+| a `404` response | a `?T` return: the router answers 404 for `none`, so the document states it, from the same declaration |
 | `components.schemas` | `field_specs_of` on every struct the walk meets, recursively; `required` is the fields that declared neither `?T` nor a default |
 | `description` | the handler's `@doc` block, when the `doc` tier is live |
 

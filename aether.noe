@@ -396,6 +396,14 @@ fn short_iface(name: string): string {
 // `string`, `Pet`, or `dyn` all resolve at the one point the value exists — a handler returning `dyn`
 // still renders as whatever it actually produced.
 fn coerce_response(result: dyn): Response {
+    // A handler that answered `none` said the thing is not there, and HTTP's word for that is 404.
+    // The rule is read off the handler's own type — `?T` is the declaration that a result may be
+    // absent — so a route-model lookup or a proxied "no such record" becomes the right status
+    // without a single line about status codes in the handler. `openapi` states the same 404 in the
+    // document, from the same `?T`.
+    if result == none {
+        return server.response(404, "404 Not Found", {"content-type": "text/plain"})
+    }
     return match result.as<Response>() {
         some(resp) => resp,
         none => match result.as<string>() {

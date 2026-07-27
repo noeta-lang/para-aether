@@ -69,6 +69,13 @@ class NotesController {
         return "deleted ${id}"
     }
 
+    // A handler that may have nothing to answer says so in its TYPE. `none` becomes a 404 — the
+    // router reads the rule off the value, and the document states the same 404 from the same `?T`.
+    #[Get("/notes/{id}/draft")]
+    fn draft(id: int): ?Note {
+        return if id == 1 then some(Note { id: 1, title: "a draft", done: false }) else none
+    }
+
     // Several `{…}` segments bind independently, by name and not by position.
     #[Get("/notes/{id}/tags/{tag}")]
     fn tagged(tag: string, id: int): string {
@@ -245,6 +252,19 @@ echo app.handle("DELETE", "/notes/7", "")
         // It is an endpoint this API has, so it appears in its own document — no special case for
         // the framework's own route, and nothing hidden from a client generated off the spec.
         assert(body.contains("/openapi.json"))
+    }
+
+    fn an_absent_answer_is_a_404_in_the_router_and_in_the_document(): void {
+        app = build()
+        assert(app.handle("GET", "/notes/1/draft", "").contains("a draft"))
+        assert(app.handle("GET", "/notes/2/draft", "") == "404 Not Found")
+
+        // …and the document says both, off the one `?Note` in the signature.
+        draft = operation(openapi.spec(build(), info()), "/notes/{id}/draft", "get")
+        responses = draft["responses"].as<Map<string, dyn>>() ?? {}
+        assert(responses.has("200"))
+        assert(responses.has("404"))
+        assert(json.stringify(responses["200"]).contains("#/components/schemas/Note"))
     }
 
     fn the_document_is_deterministic(): void {
