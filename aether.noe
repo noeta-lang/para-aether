@@ -13,6 +13,7 @@ namespace para.aether
 
 use std.fs
 use std.http.server
+use std.http.url
 use std.http.{Request, Response}
 use std.json
 use std.session
@@ -21,6 +22,10 @@ use std.task.sleep
 
 // --- Route attributes: users tag controller methods with these. -------------------------------
 
+// One attribute per HTTP method, rather than one `#[Route(method: "GET", …)]` carrying the verb as
+// a string: `attributes_of::<T>()` is a closed-world query keyed by TYPE, so the verb has to be part
+// of the type for discovery to find it — and a misspelled `#[Gett]` is then an unknown-attribute
+// error rather than a route that silently never matches.
 @attribute(Method)
 pub struct Get {
     path: string
@@ -31,47 +36,127 @@ pub struct Post {
     path: string
 }
 
-// --- A resolved route in the table. -----------------------------------------------------------
-
-struct Route {
-    method: string // "GET" / "POST"
-    path: string // "/users"
-    controller: string // "UsersController"
-    action: string // "create"
+@attribute(Method)
+pub struct Put {
+    path: string
 }
 
-// The controller + action a `"Controller.action"` target names — read from the END of the path, so
-// a controller declared in a file with a `namespace` works too. Reflection reports a target
-// fully qualified (`todo.main.StatusController.health` for a class in `namespace todo.main`), and
-// taking the first two segments read the *namespace* as the controller — every route in a
-// namespaced app then dispatched to a controller nobody registered ("500 no controller todo").
-// The class and the method are always the last two segments, namespace or not.
-fn split_target(target: string): Route {
+@attribute(Method)
+pub struct Patch {
+    path: string
+}
+
+@attribute(Method)
+pub struct Delete {
+    path: string
+}
+
+// The status a successful reply carries, when it is not 200.
+//
+// It lives HERE, beside the route attributes, rather than with the spec generator, because it is a
+// routing fact: the router answers with it, and the document merely reports what the router does. An
+// annotation that only the document read would be a licence for the two to disagree — which is the
+// one thing a generated spec exists to prevent.
+//
+// It applies to a reply the framework builds. A handler returning a `Response` has already chosen
+// its status, and an absent `?T` answer is a 404 whatever this says.
+@attribute(Method)
+pub struct Status {
+    code: int
+    description: string = "OK"
+}
+
+// --- A resolved route in the table. -----------------------------------------------------------
+
+// `pub` because the route table is what a spec generator reads: `para.aether.openapi` turns this
+// table plus the reflected handler signatures into an OpenAPI document, and it cannot do that
+// through a private type. Every field is derived — nothing here is written by hand.
+pub struct Route {
+    method: string // "GET" / "POST" / "PUT" / "PATCH" / "DELETE"
+    path: string // "/users/{id}"
+    controller: string // "UsersController"
+    action: string // "show"
+    // The handler's reflection target VERBATIM — the key `params_of` is indexed by. Reflection
+    // reports it fully qualified (`todo.main.UsersController.show` for a class in `namespace
+    // todo.main`), and shortening it to `Controller.action` strands every handler that declares a
+    // parameter: `params_of` answers the empty list for a key it does not hold, so the handler is
+    // then invoked with no arguments and fails arity — a 500 for a route that looks perfectly fine.
+    target: string
+    // The `{…}` segments of `path`, in the order they appear. Injection resolves a scalar parameter
+    // by name against these first, and the spec generator emits one `in: path` parameter per entry.
+    // Order matters and a `Map`'s key order is sorted, so the names are kept as a list.
+    path_params: List<string>
+    // The success status from `#[Status]`, or 0 for "the default" — resolved once at discovery
+    // rather than per request.
+    status: int
+}
+
+// Build the table row for one route attribute: `target` is the reflection key the attribute was
+// found under, `path` the URL template it declared.
+//
+// The controller and action are the LAST two dotted segments — a controller declared in a file with
+// a `namespace` reflects fully qualified, and reading the first two segments would take the
+// *namespace* for the controller (every route in a namespaced app then dispatched to a controller
+// nobody registered: "500 no controller todo"). The class and the method are always the last two,
+// namespace or not.
+pub fn route_for(method: string, target: string, path: string): Route {
     parts = target.split(".")
     n = parts.len()
-    controller = if n > 1 then parts[n - 2] else ""
-    action = if n > 0 then parts[n - 1] else ""
-    return Route { method: "", path: "", controller: controller, action: action }
+    return Route {
+        method: method,
+        path: path,
+        controller: if n > 1 then parts[n - 2] else "",
+        action: if n > 0 then parts[n - 1] else "",
+        target: target,
+        path_params: path_params_of(path),
+        status: status_of(target),
+    }
+}
+
+// The `#[Status]` a handler declared, or 0. `attributes_of` is a program-wide query keyed by type,
+// so the join back to one handler is on the target — the same key `params_of` uses.
+fn status_of(target: string): int {
+    for a in attributes_of::<Status>() {
+        if a.target == target {
+            return a.value.code
+        }
+    }
+    return 0
+}
+
+// The `{…}` parameter names in a route template, in order. A segment that opens `{` but never
+// closes is not a parameter — a template is authored, not remote input, but silently treating
+// `/a/{id` as a capture would match paths nobody meant it to.
+pub fn path_params_of(pattern: string): List<string> {
+    mut names: List<string> = []
+    for seg in pattern.split("/") {
+        if seg.starts_with("{") && seg.ends_with("}") && seg.len() > 2 {
+            names = names ~ [seg.slice(1, seg.len() - 1)]
+        }
+    }
+    return names
 }
 
 // --- Route path matching (with `{param}` capture). ---------------------------------------------
 
-// Match a route pattern (`/users/{id}`) against a concrete request path (`/users/7`): `none` if it
-// does not match, else `some(id)` where `id` is the captured `{…}` segment (the empty string for a
-// pattern with no parameter). A single positional capture is enough for route-model binding; richer
-// capture (named params, multiple) is a later slice.
-fn path_match(pattern: string, path: string): ?string {
+// Match a route pattern (`/users/{id}/posts/{slug}`) against a concrete request path: `none` if it
+// does not match, else `some(captures)` — every `{name}` segment bound to what stood in its place.
+// A pattern with no parameters matches to an empty map, which is a match, not a miss.
+fn path_match(pattern: string, path: string): ?Map<string, string> {
     pp = pattern.split("/")
     ap = path.split("/")
     if pp.len() != ap.len() {
         return none
     }
-    mut id = ""
+    mut captures: Map<string, string> = {}
     mut i = 0
     for seg in pp {
         actual = ap[i]
-        if seg.starts_with("{") {
-            id = actual
+        if seg.starts_with("{") && seg.ends_with("}") && seg.len() > 2 {
+            // The captured value is percent-DECODED; the literal segments are compared as written.
+            // A `{id}` of `for%20sale` is the string `for sale` — that is what the client named —
+            // while a literal segment is part of the route's own spelling and is matched verbatim.
+            captures = captures.set(seg.slice(1, seg.len() - 1), url.decode(actual))
         } else {
             if seg != actual {
                 return none
@@ -79,7 +164,42 @@ fn path_match(pattern: string, path: string): ?string {
         }
         i = i + 1
     }
-    return some(id)
+    return some(captures)
+}
+
+// Split a request target into its path and its raw query string: `"/pets?status=sold"` →
+// `("/pets", "status=sold")`. The server path never sees a query here (`Request.path()` strips it,
+// and `Request.query(name)` reads it), but the string-testable `app.handle("GET", "/pets?x=1", …)`
+// does — and a query a test cannot express is a query the string path cannot rehearse.
+fn split_query(target: string): (string, string) {
+    parts = target.split("?", 2)
+    return if parts.len() > 1 then (parts[0], parts[1]) else (target, "")
+}
+
+// Parse `a=1&b=2` into a map, percent-decoding both halves through `std.http.url` (decoding is
+// byte-wise over UTF-8, which a string-only decoder cannot reach — `%C3%A9` is one character, not
+// two). A pair with no `=` binds its key to the empty string, so `?debug` reads as present, which
+// is what a server does and what a `?string` flag parameter needs.
+fn parse_query(raw: string): Map<string, string> {
+    mut out: Map<string, string> = {}
+    if raw == "" {
+        return out
+    }
+    for pair in raw.split("&") {
+        if pair != "" {
+            kv = pair.split("=", 2)
+            out = out.set(form_decode(kv[0]), if kv.len() > 1 then form_decode(kv[1]) else "")
+        }
+    }
+    return out
+}
+
+// Decode one half of a query pair: the form-encoding rule (`+` is a space) applied BEFORE
+// percent-decoding, so an escaped plus (`%2B`) still arrives as a literal `+`. `url.decode` is
+// deliberately percent-only — the plus rule is `application/x-www-form-urlencoded`'s, not a URL's,
+// and applying it to a path segment would corrupt every path containing one.
+fn form_decode(value: string): string {
+    return url.decode(value.replace("+", " "))
 }
 
 // --- Background task scope & scheduler. --------------------------------------------------------
@@ -167,6 +287,120 @@ fn request_arg(req: ?Request): dyn {
     }
 }
 
+// --- What one request offers an injected parameter. --------------------------------------------
+
+// Gathered once per request so the injection reads a single value rather than a growing argument
+// list. Not `pub`: it is the router's internal vocabulary, and a handler receives injected values,
+// never this.
+struct Bind {
+    path: Map<string, string> // the route template's `{…}` captures, by name
+    query: Map<string, string> // the parsed query string — the STRING path's source (see `lookup`)
+    body: string
+    req: ?Request
+    id: string // the first `{…}` capture, for route-model binding
+}
+
+// The value a named scalar parameter should take, or `none` if the request does not offer one.
+//
+// Path parameters win over query parameters: a `{id}` in the template is part of the route's
+// identity, and a client appending `?id=other` must not be able to redirect a handler that matched
+// on the first one.
+//
+// The query half reads `Request.query(name)` when a live request is in hand and the parsed map
+// otherwise. That is not a fallback — it is the same value from the authoritative source on each
+// path: the host decodes a served request's query itself, while the string path parses the query it
+// was handed. Preferring the live request keeps a served handler reading exactly what the client
+// sent, percent-decoding included.
+fn lookup(bind: Bind, name: string): ?string {
+    if bind.path.has(name) {
+        return some(bind.path[name])
+    }
+    return match bind.req {
+        some(r) => r.query(name),
+        none => if bind.query.has(name) then some(bind.query[name]) else none,
+    }
+}
+
+// Inject one scalar parameter from the route or the query, parsed to its declared type.
+//
+// An absent value is a **client** error (400), not a 500: the request did not carry what the route
+// declared. An `?T` parameter is the way to say "may be absent" — it injects `none` rather than
+// failing, which is also exactly how the spec generator decides `required: false`.
+//
+// A value that will not parse is a 400 naming the parameter and the type it had to be — the one
+// message that tells a caller what to change. Silently coercing (`"abc"` → `0`) would hand the
+// handler a plausible number nobody sent.
+fn scalar_arg(p: ParamInfo, bind: Bind): Result<dyn, Response> {
+    inner = match p.type {
+        Option(t) => t,
+        t => t,
+    }
+    optional = match p.type {
+        Option(_) => true,
+        _ => false,
+    }
+    return match lookup(bind, p.name) {
+        some(raw) => match parse_scalar(raw, inner) {
+            some(v) => Ok(if optional then some(v) else v),
+            none => Err(server.response(400, "400 parameter `${p.name}` is not a valid ${type_name(inner)}: \"${raw}\"")),
+        },
+        none => if optional then Ok(none) else Err(server.response(400, "400 missing required parameter `${p.name}`")),
+    }
+}
+
+// Parse one raw URL string into the declared scalar type, or `none` when it does not represent one.
+//
+// `bool` accepts the spellings a URL actually carries — `true`/`1`/`yes`/`on` and their negatives,
+// plus the bare `?flag` form (an empty value, which `parse_query` binds when a pair has no `=`).
+// Anything else is a parse failure rather than a silent `false`.
+fn parse_scalar(raw: string, ty: Type): ?dyn {
+    return match ty {
+        Type.String => some(raw),
+        Type.Int => match raw.to_int() {
+            some(n) => some(n),
+            none => none,
+        },
+        Type.Float => match raw.to_float() {
+            some(f) => some(f),
+            none => none,
+        },
+        Type.F64 => match raw.to_float() {
+            some(f) => some(f),
+            none => none,
+        },
+        Type.F32 => match raw.to_float() {
+            some(f) => some(f.to_f32()),
+            none => none,
+        },
+        Type.Bool => match raw.lower() {
+            "" => some(true),
+            "true" => some(true),
+            "1" => some(true),
+            "yes" => some(true),
+            "on" => some(true),
+            "false" => some(false),
+            "0" => some(false),
+            "no" => some(false),
+            "off" => some(false),
+            _ => none,
+        },
+        _ => none,
+    }
+}
+
+// A scalar type's name for a diagnostic — what the caller has to supply.
+fn type_name(ty: Type): string {
+    return match ty {
+        Type.String => "string",
+        Type.Int => "int",
+        Type.Float => "float",
+        Type.F64 => "f64",
+        Type.F32 => "f32",
+        Type.Bool => "bool",
+        _ => "value",
+    }
+}
+
 // The container key for an interface: a trait's SHORT name. A `dyn Trait` parameter reflects
 // (`params_of`) with its trait name FULLY QUALIFIED — a `dyn SessionStore` in an app that imported it
 // reflects as `DynTrait("para.aether.SessionStore")`, a `dyn Clock` on an app-local trait as
@@ -178,14 +412,48 @@ fn short_iface(name: string): string {
     return if parts.len() > 0 then parts[parts.len() - 1] else name
 }
 
-// Coerce a handler's return value into a `Response`. A handler may return a `Response` verbatim — its
-// status and headers survive to the reply — or a bare `string`, which becomes a `200 text/plain`
-// body. The runtime value is inspected (`as<Response>`) rather than the handler's declared return, so
-// a method typed `Response`, `string`, or `dyn` all resolve at the one point the value exists.
-fn coerce_response(result: dyn): Response {
+// Coerce a handler's return value into a `Response`, by what the value IS:
+//
+//   - a `Response`      → verbatim; its status and headers reach the client untouched,
+//   - a `string`        → `200 text/plain`,
+//   - anything else     → `200 application/json`, the value rendered by `json.stringify`.
+//
+// The third arm is the one that lets a handler be written as `fn show(id: string): Pet` — the shape
+// a spec generator can read a response schema off, and the shape a caller actually wants. Before it
+// existed a handler returning a struct produced the string `"200 OK"`: a reply that was neither the
+// value nor an error, from code that looked correct.
+//
+// The RUNTIME value is inspected rather than the declared return type, so a method typed `Response`,
+// `string`, `Pet`, or `dyn` all resolve at the one point the value exists — a handler returning `dyn`
+// still renders as whatever it actually produced.
+fn coerce_response(result: dyn, status: int): Response {
+    // A handler that answered `none` said the thing is not there, and HTTP's word for that is 404.
+    // The rule is read off the handler's own type — `?T` is the declaration that a result may be
+    // absent — so a route-model lookup or a proxied "no such record" becomes the right status
+    // without a single line about status codes in the handler. `openapi` states the same 404 in the
+    // document, from the same `?T`.
+    if result == none {
+        return server.response(404, "404 Not Found", {"content-type": "text/plain"})
+    }
+    // A handler that answered a `Result` reported a failure it could not resolve itself. The `Ok`
+    // continues as any other value; the `Err` is a 500 carrying its message, because a framework
+    // cannot know which failure deserves which status — a handler that does returns a `Response`.
+    match result.as<Result<dyn, dyn>>() {
+        some(outcome) => {
+            return match outcome {
+                Ok(value) => coerce_response(value, status),
+                Err(reason) => server.response(500, "500 ${reason}", {"content-type": "text/plain"}),
+            }
+        },
+        none => {},
+    }
+    ok = if status == 0 then 200 else status
     return match result.as<Response>() {
         some(resp) => resp,
-        none => server.response(200, result.as<string>() ?? "200 OK", {"content-type": "text/plain"}),
+        none => match result.as<string>() {
+            some(text) => server.response(ok, text, {"content-type": "text/plain"}),
+            none => server.response(ok, json.stringify(result), {"content-type": "application/json"}),
+        },
     }
 }
 
@@ -396,16 +664,27 @@ pub class App {
         self.controllers = self.controllers.set(name, controller)
     }
 
-    // Build the route table from every `#[Get]` / `#[Post]` in the program.
+    // Build the route table from every route attribute in the program.
+    //
+    // One loop per verb, because `attributes_of::<T>()` is a closed-world query keyed by type: there
+    // is no "every attribute" query to write this as one pass, and that is the same property that
+    // makes a misspelled attribute a compile error instead of a route that never matches.
     fn discover(): void {
         mut table: List<Route> = self.routes
         for a in attributes_of::<Get>() {
-            t = split_target(a.target)
-            table = table ~ [Route { method: "GET", path: a.value.path, controller: t.controller, action: t.action }]
+            table = table ~ [route_for("GET", a.target, a.value.path)]
         }
         for a in attributes_of::<Post>() {
-            t = split_target(a.target)
-            table = table ~ [Route { method: "POST", path: a.value.path, controller: t.controller, action: t.action }]
+            table = table ~ [route_for("POST", a.target, a.value.path)]
+        }
+        for a in attributes_of::<Put>() {
+            table = table ~ [route_for("PUT", a.target, a.value.path)]
+        }
+        for a in attributes_of::<Patch>() {
+            table = table ~ [route_for("PATCH", a.target, a.value.path)]
+        }
+        for a in attributes_of::<Delete>() {
+            table = table ~ [route_for("DELETE", a.target, a.value.path)]
         }
         self.routes = table
     }
@@ -415,6 +694,26 @@ pub class App {
     // fall-through, and "no route matched, try the filesystem" is a routing decision.
     fn serve_files(dir: string): void {
         self.static_dir = dir
+    }
+
+    // Add a route the attribute scan cannot express: one whose path is decided at runtime.
+    //
+    // `#[Get("/path")]` takes a literal, which is right for an application's own endpoints — a route
+    // that can move at runtime is a route no tool can find. This is the seam for the routes a
+    // *library* contributes on the caller's terms, where the path is the caller's choice: the
+    // generated OpenAPI document at whatever URL the app wants it (`openapi.expose`). Build the row
+    // with `route_for`, so a hand-added route carries the same reflection target every discovered one
+    // does and its handler's parameters are injected identically.
+    fn add_route(r: Route): void {
+        self.routes = self.routes ~ [r]
+    }
+
+    // The discovered route table, in discovery order. What a spec generator reads: `para.aether`'s
+    // own `openapi` module turns this plus each handler's reflected signature into an OpenAPI
+    // document, and it must read the SAME table the router dispatches against — a spec derived from
+    // a second traversal could describe routes the app does not serve.
+    fn route_table(): List<Route> {
+        return self.routes
     }
 
     // The string-testable entry point: resolve + dispatch, then hand back the response *body* as a
@@ -440,12 +739,26 @@ pub class App {
     // a full `Response` — status and headers included — so the server path carries them verbatim and
     // the string path projects out the body.
     fn resolve(method: string, path: string, body: string, req: ?Request): Response {
+        // The string path carries its query in the path it was handed (`"/pets?status=sold"`); the
+        // server path never does (`Request.path()` strips it, `Request.query` reads it). Splitting
+        // here is what lets one route table serve both, and what lets a test rehearse a query
+        // without a socket.
+        (bare, raw_query) = split_query(path)
         for r in self.routes {
             if r.method == method {
-                m = path_match(r.path, path)
-                if m != none {
-                    id = m ?? ""
-                    return self.dispatch(r, id, body, req)
+                match path_match(r.path, bare) {
+                    some(captures) => {
+                        return self.dispatch(r, Bind {
+                            path: captures,
+                            query: parse_query(raw_query),
+                            body: body,
+                            req: req,
+                            // Route-model binding takes the FIRST `{…}` of the template, in pattern
+                            // order — a map's keys are sorted, so the order is read off the route.
+                            id: if r.path_params.len() > 0 then captures.get_or(r.path_params[0], "") else "",
+                        })
+                    },
+                    none => {},
                 }
             }
         }
@@ -499,27 +812,25 @@ pub class App {
         return some(server.response(200, fs.read_bytes(file), { "content-type": ct }))
     }
 
-    // Dispatch a matched route: look up its controller instance and invoke the action with the
-    // captured route id in scope (for route-model binding) and the optional live request (for DI).
-    fn dispatch(r: Route, id: string, body: string, req: ?Request): Response {
+    // Dispatch a matched route: look up its controller instance and invoke the action with everything
+    // the request offers an injected parameter.
+    fn dispatch(r: Route, bind: Bind): Response {
         if self.controllers.has(r.controller) {
-            return self.invoke_action(self.controllers[r.controller], r, id, body, req)
+            return self.invoke_action(self.controllers[r.controller], r, bind)
         }
         return server.response(500, "500 no controller ${r.controller}")
     }
 
-    // Invoke a controller action with its injected arguments and coerce the result into a `Response`:
-    // a handler may return a `Response` verbatim (status + headers survive) or a bare `string`
-    // (a `200 text/plain` reply). An invocation error is a `500` whose body is the error — the same
-    // "500 …" string `handle` used to return, now carried as a response body.
-    fn invoke_action(ctrl: dyn, r: Route, id: string, body: string, req: ?Request): Response {
-        target = "${r.controller}.${r.action}"
-        // A parameter that cannot be injected (an unregistered `dyn` service) fails the build into a
-        // `500` Response — an actionable error carried the same way an invocation error is, rather than
-        // a panic off the request path or the wrong service silently injected.
-        return match self.build_args(target, id, body, req) {
+    // Invoke a controller action with its injected arguments and coerce the result into a `Response`
+    // (see `coerce_response`). An invocation error is a `500` whose body is the error.
+    fn invoke_action(ctrl: dyn, r: Route, bind: Bind): Response {
+        // `r.target` — the reflection key VERBATIM, not a rebuilt `"${controller}.${action}"`: a
+        // controller declared under a `namespace` reflects fully qualified, and the short spelling
+        // finds no parameter list at all (`params_of` answers `[]` for an unknown key), so every
+        // handler with a parameter would be invoked with none and fail arity.
+        return match self.build_args(r.target, bind) {
             Ok(args) => match invoke(ctrl, r.action, args) {
-                Ok(result) => coerce_response(result),
+                Ok(result) => coerce_response(result, r.status),
                 Err(e) => server.response(500, "500 ${e}"),
             },
             Err(resp) => resp,
@@ -528,11 +839,12 @@ pub class App {
 
     // Build the handler's argument list by reflecting its parameters (`params_of`) and injecting each
     // one by its declared type — a for-loop, not `.map`, because the injection reads `self` and any one
-    // parameter may fail the whole build (an unregistered service) into a `500` short-circuit.
-    fn build_args(target: string, id: string, body: string, req: ?Request): Result<List<dyn>, Response> {
+    // parameter may fail the whole build (an unregistered service, a missing path parameter) into a
+    // short-circuit response.
+    fn build_args(target: string, bind: Bind): Result<List<dyn>, Response> {
         mut args: List<dyn> = []
         for p in params_of(target) {
-            match self.arg_for(p, id, body, req) {
+            match self.arg_for(p, bind) {
                 Ok(a) => { args = args ~ [a] },
                 Err(resp) => { return Err(resp) },
             }
@@ -541,22 +853,36 @@ pub class App {
     }
 
     // Inject one parameter by its reflected type:
-    //   - `dyn Trait`  → the service registered for that interface (service injection by interface),
-    //   - `Request`    → the live HTTP request (server path only; see `request_arg`),
-    //   - a nominal type → route-model binding (if `bind_model`'d) else request-body decode.
+    //   - `dyn Trait`     → the service registered for that interface (injection by interface),
+    //   - `Request`       → the live HTTP request (server path only; see `request_arg`),
+    //   - a scalar        → the route parameter or query parameter of the SAME NAME, parsed,
+    //   - `?scalar`       → the same, `none` when absent instead of a 400,
+    //   - a nominal type  → route-model binding (if `bind_model`'d) else request-body decode.
+    //
+    // The scalar arms are what let a handler read the URL: `fn show(id: string)` on `/pets/{id}`
+    // binds by NAME, not by position, so reordering the parameters cannot silently swap them. A name
+    // that is not a `{…}` of the route falls through to the query string, which is the other place a
+    // scalar can come from — one rule, checked in the order a URL is written.
     //
     // `Request` reflects as `Named("Request", [])` — the extern type's short name — so it is caught
     // inside the `Named` arm ahead of the body-decode fallback that would otherwise swallow it into a
     // JSON panic. A user body struct must not be named `Request`, which is the extern type's name.
     // Returns a `Result` so an unresolvable `dyn` service becomes a `500` the caller renders, not a
     // panic — the only injection outcome that is a *configuration* error rather than a client error.
-    fn arg_for(p: ParamInfo, id: string, body: string, req: ?Request): Result<dyn, Response> {
+    fn arg_for(p: ParamInfo, bind: Bind): Result<dyn, Response> {
         return match p.type {
             DynTrait(n) => self.resolve_service(n),
-            Struct(n, _) => Ok(self.materialize(n, id, body, req)),
-            Class(n, _) => Ok(self.materialize(n, id, body, req)),
-            Named(n, _) => if n == "Request" then Ok(request_arg(req)) else Ok(self.materialize(n, id, body, req)),
-            _ => Err(server.response(500, "500 cannot inject a parameter of this type")),
+            Struct(n, _) => Ok(self.materialize(n, bind)),
+            Class(n, _) => Ok(self.materialize(n, bind)),
+            Named(n, _) => if n == "Request" then Ok(request_arg(bind.req)) else Ok(self.materialize(n, bind)),
+            Type.String => scalar_arg(p, bind),
+            Type.Int => scalar_arg(p, bind),
+            Type.Float => scalar_arg(p, bind),
+            Type.F32 => scalar_arg(p, bind),
+            Type.F64 => scalar_arg(p, bind),
+            Type.Bool => scalar_arg(p, bind),
+            Option(_) => scalar_arg(p, bind),
+            _ => Err(server.response(500, "500 cannot inject `${p.name}`: no rule for a parameter of this type")),
         }
     }
 
@@ -580,11 +906,11 @@ pub class App {
     // declares a body struct would otherwise 400 on every form submission. The form body is
     // converted to a JSON object first and then decoded through the SAME typed door, so a struct
     // needs no second derive and the two content types stay one code path.
-    fn materialize(name: string, id: string, body: string, req: ?Request): dyn {
+    fn materialize(name: string, bind: Bind): dyn {
         if self.is_bound(name) {
-            return self.store.load(name, id)
+            return self.store.load(name, bind.id)
         }
-        payload = if is_form_request(req) then form_to_json(server.parse_form(body)) else body
+        payload = if is_form_request(bind.req) then form_to_json(server.parse_form(bind.body)) else bind.body
         return match json.decode_typed(name, payload) {
             Ok(v) => v,
             Err(e) => panic("400 ${e}"),

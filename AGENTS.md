@@ -5,7 +5,8 @@ Guidance for coding agents working in this repo — the standalone repo of the *
 ## Repo layout
 
 - `noeta.toml` — the package manifest (`name = "para/aether"`). No `native` key: this package is pure Noeta.
-- `aether.noe` — the whole surface: route attributes (`Get`/`Post`), `App` (reflection routing + DI), `ServiceProvider`, `Middleware`/`Next`, `Config`, `Store`, sessions (`SessionStore`/`CookieSessions`), and the background-task helpers (`work`/`background`/`every`).
+- `aether.noe` — the routing + DI core: route attributes (`Get`/`Post`/`Put`/`Patch`/`Delete`), `App` (reflection routing + DI), `ServiceProvider`, `Middleware`/`Next`, `Config`, `Store`, sessions (`SessionStore`/`CookieSessions`), and the background-task helpers (`work`/`background`/`every`).
+- `openapi.noe` — `para.aether.openapi`: the OpenAPI 3.1 document derived from the route table and the handlers' reflected signatures (`params_of` / `returns_of` / `field_specs_of`), plus `expose(app, path, info)` which serves it as an ordinary route. It imports `para.aether`; `para.aether` must never import it back, or the two modules cycle.
 - `examples/*/` — each a standalone package depending on this repo via `para = { path = "../.." }`, with its own committed `noeta.lock`.
 - `.github/workflows/` — CI (`ci.yml`) and the tag-triggered registry publish (`release.yml`).
 
