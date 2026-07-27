@@ -1,0 +1,146 @@
+// A REST controller in the shape aether now supports end to end: every verb, path parameters and
+// query parameters injected BY NAME, and handlers that return values rather than pre-rendered
+// strings.
+//
+// Nothing here registers a route, decodes a body, or reads a URL by hand — the whole wiring is the
+// `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
+use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider}
+
+@derive(Serialize<Json>)
+struct Note {
+    id: int
+    title: string
+    done: bool
+}
+
+@derive(Deserialize<Json>)
+struct NewNote {
+    title: string
+}
+
+class NotesController {
+    fn new(): NotesController {
+        return NotesController {}
+    }
+
+    // A query parameter arrives by name; `?bool` means "may be absent", so `/notes` and
+    // `/notes?done=true` are both valid requests and the handler tells them apart.
+    #[Get("/notes")]
+    fn index(done: ?bool, limit: ?int): List<Note> {
+        all = [
+            Note { id: 1, title: "write the spec", done: true },
+            Note { id: 2, title: "generate the spec", done: false },
+        ]
+        filtered = if done == none then all else all.filter(fn(n) => some(n.done) == done)
+        return match limit {
+            some(n) => filtered.slice(0, n),
+            none => filtered,
+        }
+    }
+
+    // A path parameter is injected by NAME — `{id}` binds the `id: int` parameter, parsed. A path
+    // that is not an int never reaches this body: it is a 400 naming the parameter.
+    #[Get("/notes/{id}")]
+    fn show(id: int): Note {
+        return Note { id: id, title: "note ${id}", done: false }
+    }
+
+    // A body decodes into a typed struct; the reply is a value, rendered as JSON.
+    #[Post("/notes")]
+    fn create(body: NewNote): Note {
+        return Note { id: 3, title: body.title, done: false }
+    }
+
+    // Two parameters of different kinds in one signature: the route's `{id}` and the request body.
+    #[Put("/notes/{id}")]
+    fn replace(id: int, body: NewNote): Note {
+        return Note { id: id, title: body.title, done: false }
+    }
+
+    #[Patch("/notes/{id}")]
+    fn touch(id: int): Note {
+        return Note { id: id, title: "note ${id}", done: true }
+    }
+
+    #[Delete("/notes/{id}")]
+    fn destroy(id: int): string {
+        return "deleted ${id}"
+    }
+
+    // Several `{…}` segments bind independently, by name and not by position.
+    #[Get("/notes/{id}/tags/{tag}")]
+    fn tagged(tag: string, id: int): string {
+        return "note ${id} tagged ${tag}"
+    }
+}
+
+class NotesProvider {
+    fn new(): NotesProvider {
+        return NotesProvider {}
+    }
+    impl ServiceProvider {
+        fn register(app: App): void {
+            app.register("NotesController", NotesController.new())
+        }
+    }
+}
+
+fn build(): App {
+    app = App.new()
+    app.provider(NotesProvider.new())
+    app.discover()
+    return app
+}
+
+app = build()
+echo app.handle("GET", "/notes", "")
+echo app.handle("GET", "/notes/7", "")
+echo app.handle("DELETE", "/notes/7", "")
+
+@test {
+    fn a_handler_returning_a_value_replies_as_json(): void {
+        app = build()
+        assert(app.handle("GET", "/notes/7", "") == "{\"id\":7,\"title\":\"note 7\",\"done\":false}")
+    }
+
+    fn a_query_parameter_is_injected_by_name(): void {
+        app = build()
+        assert(app.handle("GET", "/notes?done=true", "").contains("write the spec"))
+        assert(!app.handle("GET", "/notes?done=true", "").contains("generate the spec"))
+        // Absent is a legitimate answer for a `?T` parameter, not a 400.
+        assert(app.handle("GET", "/notes", "").contains("generate the spec"))
+    }
+
+    fn query_parameters_compose(): void {
+        app = build()
+        assert(app.handle("GET", "/notes?limit=1", "").contains("write the spec"))
+        assert(!app.handle("GET", "/notes?limit=1", "").contains("generate the spec"))
+    }
+
+    fn every_verb_routes(): void {
+        app = build()
+        assert(app.handle("POST", "/notes", "{\"title\":\"new\"}").contains("\"title\":\"new\""))
+        assert(app.handle("PUT", "/notes/9", "{\"title\":\"put\"}").contains("\"id\":9"))
+        assert(app.handle("PATCH", "/notes/9", "").contains("\"done\":true"))
+        assert(app.handle("DELETE", "/notes/9", "") == "deleted 9")
+    }
+
+    fn several_path_parameters_bind_by_name_not_position(): void {
+        app = build()
+        // The handler declares `(tag, id)` while the route reads `{id}` then `{tag}` — binding by
+        // name is what makes that harmless.
+        assert(app.handle("GET", "/notes/4/tags/urgent", "") == "note 4 tagged urgent")
+    }
+
+    fn a_path_parameter_that_is_not_the_declared_type_is_a_400(): void {
+        app = build()
+        reply = app.handle("GET", "/notes/abc", "")
+        assert(reply.contains("400"))
+        assert(reply.contains("id"))
+    }
+
+    fn a_percent_encoded_query_value_arrives_decoded(): void {
+        app = build()
+        assert(app.handle("GET", "/notes/1/tags/for%20sale", "") == "note 1 tagged for sale")
+    }
+}

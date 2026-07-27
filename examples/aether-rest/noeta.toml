@@ -1,0 +1,9 @@
+[package]
+name = "noeta/aether_rest"
+version = "0.1.0"
+
+[dependencies]
+para = { path = "../.." }
+
+[targets.development.tiers]
+test = "std"
