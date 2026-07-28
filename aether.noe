@@ -342,7 +342,7 @@ fn scalar_arg(p: ParamInfo, bind: Bind): Result<dyn, Response> {
     return match lookup(bind, p.name) {
         some(raw) => match parse_scalar(raw, inner) {
             some(v) => Ok(if optional then some(v) else v),
-            none => Err(server.response(400, "400 parameter `${p.name}` is not a valid ${type_name(inner)}: \"${raw}\"")),
+            none => Err(server.response(400, "400 parameter `${p.name}` is not a valid ${type_label(inner)}: \"${raw}\"")),
         },
         none => if optional then Ok(none) else Err(server.response(400, "400 missing required parameter `${p.name}`")),
     }
@@ -389,7 +389,7 @@ fn parse_scalar(raw: string, ty: Type): ?dyn {
 }
 
 // A scalar type's name for a diagnostic — what the caller has to supply.
-fn type_name(ty: Type): string {
+fn type_label(ty: Type): string {
     return match ty {
         Type.String => "string",
         Type.Int => "int",

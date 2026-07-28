@@ -484,12 +484,12 @@ class Registry {
     // use. So the last segment wins, unless another module already published a type of that name,
     // in which case this one keeps its qualified spelling rather than silently overwriting a schema
     // that describes something else.
-    fn component_name(type_name: string): string {
-        parts = type_name.split(".")
-        leaf = if parts.len() > 0 then parts[parts.len() - 1] else type_name
+    fn component_name(qualified_name: string): string {
+        parts = qualified_name.split(".")
+        leaf = if parts.len() > 0 then parts[parts.len() - 1] else qualified_name
         for taken in self.names.keys() {
             if self.names[taken] == leaf {
-                return type_name
+                return qualified_name
             }
         }
         return leaf
