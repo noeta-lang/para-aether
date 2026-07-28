@@ -2,3 +2,8 @@ target/
 
 # Agent worktrees.
 .claude/
+
+# Example projects are demos, not package roots — their lockfiles are
+# regenerated on every run and are not meant to be committed. The
+# package root's own noeta.lock (if any) is tracked.
+examples/*/noeta.lock
