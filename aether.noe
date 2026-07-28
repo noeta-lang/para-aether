@@ -781,7 +781,7 @@ pub class App {
     // rejects the request outright, and the rebuilt path is joined from the segments that
     // survived. A percent-encoded `%2e%2e` is decoded FIRST, so it is caught by the same rule.
     fn static_file(path: string): ?Response {
-        decoded = server.url_decode(path)
+        decoded = url.decode(path)
         mut parts: List<string> = []
         for seg in decoded.split("/") {
             if seg == "" {
