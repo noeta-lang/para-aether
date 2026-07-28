@@ -51,6 +51,17 @@ pub struct Delete {
     path: string
 }
 
+// QUERY — a safe, idempotent read that carries a request body, for a search or filter too large to
+// sit in a URL. It is `GET` semantics with `POST`'s payload, so the handler declares a body struct
+// exactly as a `#[Post]` one does; the router matches the verb and injects the body by type, with no
+// verb-specific path anywhere below. `std.http` speaks it on both ends (`client.query`, and the
+// server reads the method verbatim), and the spec generator lowercases it to the `query` operation
+// key the OpenAPI QUERY proposal uses.
+@attribute(Method)
+pub struct Query {
+    path: string
+}
+
 // The status a successful reply carries, when it is not 200.
 //
 // It lives HERE, beside the route attributes, rather than with the spec generator, because it is a
@@ -72,7 +83,7 @@ pub struct Status {
 // table plus the reflected handler signatures into an OpenAPI document, and it cannot do that
 // through a private type. Every field is derived — nothing here is written by hand.
 pub struct Route {
-    method: string // "GET" / "POST" / "PUT" / "PATCH" / "DELETE"
+    method: string // "GET" / "POST" / "PUT" / "PATCH" / "DELETE" / "QUERY"
     path: string // "/users/{id}"
     controller: string // "UsersController"
     action: string // "show"
@@ -685,6 +696,9 @@ pub class App {
         }
         for a in attributes_of::<Delete>() {
             table = table ~ [route_for("DELETE", a.target, a.value.path)]
+        }
+        for a in attributes_of::<Query>() {
+            table = table ~ [route_for("QUERY", a.target, a.value.path)]
         }
         self.routes = table
     }
