@@ -4,7 +4,7 @@
 //
 // Nothing here registers a route, decodes a body, or reads a URL by hand — the whole wiring is the
 // `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
-use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider, Status}
+use para.aether.{App, Get, Post, Put, Patch, Delete, Query, ServiceProvider, Status}
 use para.aether.openapi
 use para.aether.openapi.Summary
 use std.json
@@ -19,6 +19,11 @@ struct Note {
 @derive(Deserialize<Json>)
 struct NewNote {
     title: string
+}
+
+@derive(Deserialize<Json>)
+struct Filter {
+    term: string
 }
 
 class NotesController {
@@ -71,6 +76,18 @@ class NotesController {
     #[Delete("/notes/{id}")]
     fn destroy(id: int): string {
         return "deleted ${id}"
+    }
+
+    // QUERY — a read whose criteria are too big for a URL, so they ride in a body. It carries a
+    // payload like `#[Post]` but creates nothing like `#[Get]`: the body decodes into a typed struct
+    // the same way, and the reply is the matching notes. The signature is unchanged by the verb.
+    #[Query("/notes/search")]
+    fn search(body: Filter): List<Note> {
+        all = [
+            Note { id: 1, title: "write the spec", done: true },
+            Note { id: 2, title: "generate the spec", done: false },
+        ]
+        return all.filter(fn(n) => n.title.contains(body.term))
     }
 
     // A handler that may have nothing to answer says so in its TYPE. `none` becomes a 404 — the
@@ -159,6 +176,24 @@ echo app.handle("DELETE", "/notes/7", "")
         assert(app.handle("PUT", "/notes/9", "{\"title\":\"put\"}").contains("\"id\":9"))
         assert(app.handle("PATCH", "/notes/9", "").contains("\"done\":true"))
         assert(app.handle("DELETE", "/notes/9", "") == "deleted 9")
+        // QUERY routes like any other verb; its body is injected the same way `#[Post]`'s is.
+        assert(app.handle("QUERY", "/notes/search", "{\"term\":\"generate\"}").contains("generate the spec"))
+    }
+
+    fn a_query_verb_carries_a_body_and_is_a_query_operation(): void {
+        app = build()
+        // QUERY is a read, but its criteria ride in a body — the one thing that distinguishes it from
+        // `#[Get]`. The filter is applied and only the matching note comes back.
+        hit = app.handle("QUERY", "/notes/search", "{\"term\":\"generate\"}")
+        assert(hit.contains("generate the spec"))
+        assert(!hit.contains("write the spec"))
+
+        // In the document it is the `query` operation the OpenAPI QUERY proposal names, and its body
+        // is a `$ref` request body exactly as `#[Post]`'s is — the generator has no verb-specific
+        // path, so the body arrives from the parameter type, not the verb.
+        search = operation(openapi.spec(build(), info()), "/notes/search", "query")
+        assert(search.has("requestBody"))
+        assert(json.stringify(search["requestBody"]).contains("#/components/schemas/Filter"))
     }
 
     fn several_path_parameters_bind_by_name_not_position(): void {
@@ -197,6 +232,9 @@ echo app.handle("DELETE", "/notes/7", "")
         assert(doc.contains("\"patch\""))
         assert(doc.contains("\"delete\""))
         assert(doc.contains("\"post\""))
+        // QUERY lowercases to the `query` operation key on its own path.
+        assert(doc.contains("\"query\""))
+        assert(doc.contains("\"/notes/search\""))
         assert(doc.contains("\"openapi\":\"3.1.0\""))
     }
 
