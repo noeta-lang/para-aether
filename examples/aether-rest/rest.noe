@@ -6,6 +6,7 @@
 // `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
 use para.aether.{App, Get, Post, Put, Patch, Delete, ServiceProvider, Status}
 use para.aether.openapi
+use para.aether.openapi.Summary
 use std.json
 
 @derive(Serialize<Json>)
@@ -77,6 +78,15 @@ class NotesController {
     #[Get("/notes/{id}/draft")]
     fn draft(id: int): ?Note {
         return if id == 1 then some(Note { id: 1, title: "a draft", done: false }) else none
+    }
+
+    // Prose the code cannot state. A `@doc` block is the first choice — it is read straight off the
+    // declaration when the doc tier is live — and `#[Summary]` is what an app reaches for when it
+    // wants a one-line summary in an ordinary production build, where doc blocks are stripped.
+    #[Summary("Purge a note", description: "Removes the note and everything attached to it.")]
+    #[Delete("/notes/{id}/purge")]
+    fn purge(id: int): string {
+        return "purged ${id}"
     }
 
     // A handler that can fail in a way it cannot resolve says so with `Result`. The `Ok` is the
@@ -305,6 +315,12 @@ echo app.handle("DELETE", "/notes/7", "")
         assert(responses.has("200"))
         assert(responses.has("500"))
         assert(json.stringify(responses["200"]).contains("#/components/schemas/Note"))
+    }
+
+    fn a_summary_attribute_supplies_the_prose_a_signature_cannot(): void {
+        purge = operation(openapi.spec(build(), info()), "/notes/{id}/purge", "delete")
+        assert(purge["summary"].as<string>() == some("Purge a note"))
+        assert(purge["description"].as<string>() == some("Removes the note and everything attached to it."))
     }
 
     fn the_document_is_deterministic(): void {
