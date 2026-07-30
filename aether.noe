@@ -960,8 +960,12 @@ pub class App {
         return resp
     }
 
-    // Run the app on `port`, dispatching each request through the router.
-    fn serve(port: int): void {
+    // Run the app on `port`, dispatching each request through the router. Returns `never`: the
+    // accept loop ends only on an external SIGINT drain, exactly as `std.http.server.serve` states,
+    // so no caller code after it is reachable. Declaring it honestly matters — the tier runners'
+    // shared-setup filter drops a top-level `app.serve(port)` from a `noeta test` run precisely
+    // because it is `never`; a `void` here would let the test harness run the server and block.
+    fn serve(port: int): never {
         server.serve(port, self.route)
     }
 }
