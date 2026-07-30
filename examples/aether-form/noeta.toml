@@ -3,4 +3,4 @@ name = "noeta/aether_form"
 version = "0.1.0"
 
 [dependencies]
-para = { path = "../.." }
+para = [{ path = "../.." }]

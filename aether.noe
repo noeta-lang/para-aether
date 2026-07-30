@@ -9,8 +9,6 @@
 // This module is the routing + dependency-injection core. Middleware, service providers, the config
 // registry, and the background-task scope layer on top of it.
 
-namespace para.aether
-
 use std.fs
 use std.http.server
 use std.http.url

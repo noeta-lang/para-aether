@@ -21,10 +21,7 @@
 // which is exactly why 3.1: Noeta's optionality is a type, and 3.1 is the version whose schema
 // vocabulary can say so.
 
-namespace para.aether.openapi
-
-use para.aether
-use para.aether.{App, Route}
+use aether.{App, Route, Status, route_for}
 use std.http.server
 use std.http.Response
 use std.json
@@ -66,7 +63,7 @@ pub struct Summary {
 pub fn expose(app: App, path: string, info: Info): void {
     ctrl = SpecController.new(app, info)
     app.register("SpecController", ctrl)
-    app.add_route(aether.route_for("GET", "${qualified(ctrl)}.openapi", path))
+    app.add_route(route_for("GET", "${qualified(ctrl)}.openapi", path))
 }
 
 // The reflection target of a value's own class — fully qualified, which is what `params_of` and
@@ -347,8 +344,8 @@ fn summary_attr(r: Route): ?Summary {
     return none
 }
 
-fn status_attr(r: Route): ?aether.Status {
-    for a in attributes_of::<aether.Status>() {
+fn status_attr(r: Route): ?Status {
+    for a in attributes_of::<Status>() {
         if a.target == r.target {
             return some(a.value)
         }
