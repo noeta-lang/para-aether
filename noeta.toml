@@ -1,8 +1,8 @@
 [package]
 name = "para/aether"
-version = "0.1.2"
+version = "0.2.0"
 # The minimum noeta this package works with; enforced at resolve time from noeta 0.2.1 on.
-toolchain = ">=0.2"
+toolchain = ">=0.3"
 license = "MIT OR Apache-2.0"
 description = "The Noeta web framework: routing, middleware, dependency injection, sessions, and TLS."
 keywords = ["web", "framework", "http", "server", "routing"]
