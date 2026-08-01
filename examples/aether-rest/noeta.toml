@@ -5,5 +5,11 @@ version = "0.1.0"
 [dependencies]
 para = [{ path = "../.." }]
 
-[targets.development.tiers]
+# `[tiers]` binds the local `@test` name to its provider; the target only says which of those
+# names are live. The two were one table before 0.3.0, where a target's sub-table named the
+# provider directly.
+[tiers]
 test = "std"
+
+[targets.development]
+tiers = ["test"]
