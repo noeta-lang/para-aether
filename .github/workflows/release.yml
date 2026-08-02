@@ -4,9 +4,8 @@ name: Release
 # `noeta publish` this repo + tag to the hosted registry. Provenance is keyless Sigstore via the
 # ambient GitHub OIDC identity — hence `id-token: write`.
 #
-# NOTE: goes live once the noeta toolchain repo is published under github.com/noeta-lang/noeta,
-# the pre-publish `file:///` git deps are flipped to it, and the registry scope `para` is claimed
-# by the noeta-lang org (tracked in the pre-alpha run-list).
+# The full CI is reused as the gate below, so a tag publishes only a tree that is canonically
+# formatted and whose every example checks and tests.
 
 on:
   push:
