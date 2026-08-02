@@ -193,7 +193,9 @@ fn operation(r: Route, table: List<Route>, docs: Map<string, string>, reg: Regis
         op = op.set("parameters", params)
     }
     match request_body(r, reg) {
-        some(body) => { op = op.set("requestBody", body) },
+        some(body) => {
+            op = op.set("requestBody", body)
+        },
         none => {},
     }
     return op

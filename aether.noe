@@ -264,10 +264,8 @@ fn path_match(pattern: string, path: string): ?Map<string, string> {
             // A `{id}` of `for%20sale` is the string `for sale` — that is what the client named —
             // while a literal segment is part of the route's own spelling and is matched verbatim.
             captures = captures.set(seg.slice(1, seg.len() - 1), url.decode(actual))
-        } else {
-            if seg != actual {
-                return none
-            }
+        } else if seg != actual {
+            return none
         }
         i = i + 1
     }
@@ -917,9 +915,9 @@ pub class App {
         // Text is served as text and binary as bytes, so a response body reads back as what the
         // file actually is (`.body()` on a bytes response renders as a byte count, not content).
         if is_text(ct) {
-            return some(server.response(200, fs.read(file), { "content-type": ct }))
+            return some(server.response(200, fs.read(file), {"content-type": ct}))
         }
-        return some(server.response(200, fs.read_bytes(file), { "content-type": ct }))
+        return some(server.response(200, fs.read_bytes(file), {"content-type": ct}))
     }
 
     // Dispatch a matched route: look up its controller instance and invoke the action with everything
@@ -955,8 +953,12 @@ pub class App {
         mut args: List<dyn> = []
         for p in params_of(target) {
             match self.arg_for(p, bind) {
-                Ok(a) => { args = args ~ [a] },
-                Err(resp) => { return Err(resp) },
+                Ok(a) => {
+                    args = args ~ [a]
+                },
+                Err(resp) => {
+                    return Err(resp)
+                },
             }
         }
         return Ok(args)
@@ -1073,6 +1075,10 @@ pub class App {
 // downloads instead of interpreting — the safe default for a file the framework cannot classify.
 fn content_type(name: string): string {
     lower = name.lower()
+    // One row per extension, read as a table rather than as fifteen statements — which is what
+    // `// fmt: off` is for, and the reason this block is exempt from the formatter's usual
+    // one-statement-per-line block bodies.
+    // fmt: off
     if lower.ends_with(".html") || lower.ends_with(".htm") { return "text/html; charset=utf-8" }
     if lower.ends_with(".css") { return "text/css; charset=utf-8" }
     if lower.ends_with(".js") || lower.ends_with(".mjs") { return "text/javascript; charset=utf-8" }
@@ -1088,6 +1094,7 @@ fn content_type(name: string): string {
     if lower.ends_with(".txt") { return "text/plain; charset=utf-8" }
     if lower.ends_with(".xml") { return "application/xml" }
     if lower.ends_with(".pdf") { return "application/pdf" }
+    // fmt: on
     return "application/octet-stream"
 }
 
