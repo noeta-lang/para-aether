@@ -15,10 +15,14 @@ use para.aether.{App, Get}
 use std.http.server
 
 class HealthController {
-    fn new(): HealthController { return HealthController {} }
+    fn new(): HealthController {
+        return HealthController {}
+    }
 
     #[Get("/health")]
-    fn health(): string { return "ok" }
+    fn health(): string {
+        return "ok"
+    }
 }
 
 app = App.new()

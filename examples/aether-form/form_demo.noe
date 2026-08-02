@@ -18,7 +18,9 @@ struct CreateUser {
 }
 
 class UsersController {
-    fn new(): UsersController { return UsersController {} }
+    fn new(): UsersController {
+        return UsersController {}
+    }
 
     #[Post("/users")]
     fn create(body: CreateUser): string {

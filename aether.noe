@@ -1,6 +1,7 @@
 // para.aether — a first-party web framework for Noeta.
 //
-// Controllers are classes whose methods are tagged `#[Get("/path")]` / `#[Post("/path")]`. The `App`
+// Controllers are classes whose methods are tagged `#[Get("/path")]` / `#[Post("/path")]`, and whose
+// class may carry a `#[Group("/prefix")]` every one of its routes hangs under. The `App`
 // autodiscovers those routes by reflection (`attributes_of`), and for each request it reflects the
 // handler's parameters (`params_of`) and INJECTS each one by its declared type — a request body
 // materialized into a typed struct (`json.decode_typed`, backed by `@derive(Deserialize<Json>)`) —
@@ -75,6 +76,28 @@ pub struct Status {
     description: string = "OK"
 }
 
+// The prefix every route on a controller hangs under, stated once on the controller instead of
+// repeated in each of its route attributes: a `#[Group("/api/v1")]` class whose method declares
+// `#[Get("/notes")]` is served at `/api/v1/notes`.
+//
+// It is a CLASS attribute, and that is the whole mechanism: reflection keys a class attribute by
+// the class and a method attribute by `Class.method`, so the join from a route back to its group is
+// the target minus its last segment (`owner_of`). Nothing registers a group — the same closed-world
+// `attributes_of` query that finds the routes finds the prefix they share.
+//
+// `prefix` is normalized, so `"api/v1"`, `"/api/v1"` and `"/api/v1/"` name the same group; a prefix
+// that normalizes to nothing (`""`, `"/"`) leaves its routes exactly where they were written.
+//
+// `tag` is the one field here the router does not read: it names the group in a generated OpenAPI
+// document, where the controller name is otherwise the tag. It rides on `#[Group]` rather than on
+// an attribute of its own because a group IS the grouping a document wants to report — an app that
+// has already said "these routes belong together" should not have to say it twice.
+@attribute(Class, Struct)
+pub struct Group {
+    prefix: string
+    tag: string = ""
+}
+
 // --- A resolved route in the table. -----------------------------------------------------------
 
 // `pub` because the route table is what a spec generator reads: `para.aether.openapi` turns this
@@ -82,7 +105,10 @@ pub struct Status {
 // through a private type. Every field is derived — nothing here is written by hand.
 pub struct Route {
     method: string // "GET" / "POST" / "PUT" / "PATCH" / "DELETE" / "QUERY"
-    path: string // "/users/{id}"
+    // The FULL path the router matches and the document states — a `#[Group]` prefix already
+    // joined on. There is no second, unprefixed spelling of a route anywhere: the table is the one
+    // place a path is stated, so the router and the spec cannot disagree about where a route lives.
+    path: string // "/api/v1/users/{id}"
     controller: string // "UsersController"
     action: string // "show"
     // The handler's reflection target VERBATIM — the key `params_of` is indexed by. Reflection
@@ -101,23 +127,31 @@ pub struct Route {
 }
 
 // Build the table row for one route attribute: `target` is the reflection key the attribute was
-// found under, `path` the URL template it declared.
+// found under, `path` the URL template it declared — RELATIVE to its controller's `#[Group]`, if it
+// declared one, so the row's own `path` is the joined, full one.
 //
 // The controller and action are the LAST two dotted segments — a controller declared in a file with
 // a `namespace` reflects fully qualified, and reading the first two segments would take the
 // *namespace* for the controller (every route in a namespaced app then dispatched to a controller
 // nobody registered: "500 no controller todo"). The class and the method are always the last two,
 // namespace or not.
+//
+// The group is resolved HERE rather than in `discover`, for the same reason `#[Status]` is: this is
+// the one constructor of a table row, so a route added by hand through `add_route` is prefixed by
+// its controller's group exactly as a discovered one is, and no caller has to remember to join.
 pub fn route_for(method: string, target: string, path: string): Route {
     parts = target.split(".")
     n = parts.len()
+    // Everything downstream reads the joined path — `path_params_of` included, so a `{…}` in the
+    // prefix is a capture like any other and the injector binds it by name.
+    full = join_path(prefix_of(target), path)
     return Route {
         method: method,
-        path: path,
+        path: full,
         controller: if n > 1 then parts[n - 2] else "",
         action: if n > 0 then parts[n - 1] else "",
         target: target,
-        path_params: path_params_of(path),
+        path_params: path_params_of(full),
         status: status_of(target),
     }
 }
@@ -131,6 +165,70 @@ fn status_of(target: string): int {
         }
     }
     return 0
+}
+
+// The reflection target of the type a handler belongs to: `todo.main.UsersController.show` →
+// `todo.main.UsersController`, which is the key a CLASS attribute on that controller is recorded
+// under. Empty for a bare target with no owner (a top-level function), which no group can match.
+pub fn owner_of(target: string): string {
+    parts = target.split(".")
+    n = parts.len()
+    return if n > 1 then parts.slice(0, n - 1).join(".") else ""
+}
+
+// The `#[Group]` on a handler's controller, if it declared one. The join is on the OWNER of the
+// target — a group is a fact about the class, and every route on it reads the same row.
+pub fn group_of(target: string): ?Group {
+    owner = owner_of(target)
+    if owner == "" {
+        return none
+    }
+    for a in attributes_of::<Group>() {
+        if a.target == owner {
+            return some(a.value)
+        }
+    }
+    return none
+}
+
+// The group prefix a handler's routes hang under, or "" for an ungrouped controller.
+fn prefix_of(target: string): string {
+    return match group_of(target) {
+        some(g) => g.prefix,
+        none => "",
+    }
+}
+
+// A group prefix in one spelling: leading slash, no trailing slash, no empty segments. `"api/v1"`,
+// `"/api/v1"` and `"/api/v1/"` all normalize to `"/api/v1"`, and `""` and `"/"` to `""`.
+//
+// Normalizing rather than demanding one spelling is what keeps the joined path a single `~`: with
+// the prefix known to end in no slash and the route known to start with one, there is no case where
+// the two produce `//`, which matches nothing and is the whole failure mode of string-joined paths.
+fn normalize_prefix(prefix: string): string {
+    mut parts: List<string> = []
+    for seg in prefix.split("/") {
+        if seg != "" {
+            parts = parts ~ [seg]
+        }
+    }
+    return if parts.len() == 0 then "" else "/" ~ parts.join("/")
+}
+
+// Hang a route's declared path under a group prefix.
+//
+// A handler whose own path is empty (or "/") IS the group: `#[Group("/api/v1/tags")]` with
+// `#[Get("")]` is served at `/api/v1/tags`, not `/api/v1/tags/`, because a trailing slash is a
+// different URL and the collection endpoint of a grouped resource is the one without it.
+fn join_path(prefix: string, path: string): string {
+    p = normalize_prefix(prefix)
+    if p == "" {
+        return path
+    }
+    if path == "" || path == "/" {
+        return p
+    }
+    return p ~ (if path.starts_with("/") then path else "/" ~ path)
 }
 
 // The `{…}` parameter names in a route template, in order. A segment that opens `{` but never
@@ -166,10 +264,8 @@ fn path_match(pattern: string, path: string): ?Map<string, string> {
             // A `{id}` of `for%20sale` is the string `for sale` — that is what the client named —
             // while a literal segment is part of the route's own spelling and is matched verbatim.
             captures = captures.set(seg.slice(1, seg.len() - 1), url.decode(actual))
-        } else {
-            if seg != actual {
-                return none
-            }
+        } else if seg != actual {
+            return none
         }
         i = i + 1
     }
@@ -819,9 +915,9 @@ pub class App {
         // Text is served as text and binary as bytes, so a response body reads back as what the
         // file actually is (`.body()` on a bytes response renders as a byte count, not content).
         if is_text(ct) {
-            return some(server.response(200, fs.read(file), { "content-type": ct }))
+            return some(server.response(200, fs.read(file), {"content-type": ct}))
         }
-        return some(server.response(200, fs.read_bytes(file), { "content-type": ct }))
+        return some(server.response(200, fs.read_bytes(file), {"content-type": ct}))
     }
 
     // Dispatch a matched route: look up its controller instance and invoke the action with everything
@@ -857,8 +953,12 @@ pub class App {
         mut args: List<dyn> = []
         for p in params_of(target) {
             match self.arg_for(p, bind) {
-                Ok(a) => { args = args ~ [a] },
-                Err(resp) => { return Err(resp) },
+                Ok(a) => {
+                    args = args ~ [a]
+                },
+                Err(resp) => {
+                    return Err(resp)
+                },
             }
         }
         return Ok(args)
@@ -975,6 +1075,10 @@ pub class App {
 // downloads instead of interpreting — the safe default for a file the framework cannot classify.
 fn content_type(name: string): string {
     lower = name.lower()
+    // One row per extension, read as a table rather than as fifteen statements — which is what
+    // `// fmt: off` is for, and the reason this block is exempt from the formatter's usual
+    // one-statement-per-line block bodies.
+    // fmt: off
     if lower.ends_with(".html") || lower.ends_with(".htm") { return "text/html; charset=utf-8" }
     if lower.ends_with(".css") { return "text/css; charset=utf-8" }
     if lower.ends_with(".js") || lower.ends_with(".mjs") { return "text/javascript; charset=utf-8" }
@@ -990,6 +1094,7 @@ fn content_type(name: string): string {
     if lower.ends_with(".txt") { return "text/plain; charset=utf-8" }
     if lower.ends_with(".xml") { return "application/xml" }
     if lower.ends_with(".pdf") { return "application/pdf" }
+    // fmt: on
     return "application/octet-stream"
 }
 
