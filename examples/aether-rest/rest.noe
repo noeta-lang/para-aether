@@ -4,7 +4,7 @@
 //
 // Nothing here registers a route, decodes a body, or reads a URL by hand — the whole wiring is the
 // `#[Get]`/`#[Post]`/… attribute plus the handler's own signature, recovered by reflection.
-use para.aether.{App, Get, Post, Put, Patch, Delete, Query, ServiceProvider, Status}
+use para.aether.{App, Get, Group, Post, Put, Patch, Delete, Query, ServiceProvider, Status}
 use para.aether.openapi
 use para.aether.openapi.Summary
 use std.json
@@ -120,6 +120,70 @@ class NotesController {
     }
 }
 
+// A second resource, whose routes all hang under one prefix stated ONCE — on the class, not in each
+// route attribute. `#[Get("")]` below is served at `/api/v1/tags` and `#[Get("/{name}")]` at
+// `/api/v1/tags/{name}`; nothing in this class repeats the prefix, and moving the whole resource
+// (to `/api/v2/tags`, say) is one edit in one place.
+//
+// The prefix is written without a leading slash, because it is normalized — `"api/v1/tags"`,
+// `"/api/v1/tags"` and `"/api/v1/tags/"` are the same group, so a group's spelling is never the
+// reason a route 404s. `tag:` is the name the generated document files these operations under; drop
+// it and they are filed under the controller, exactly as an ungrouped controller's are.
+#[Group("api/v1/tags", tag: "Tags")]
+class TagsController {
+    fn new(): TagsController {
+        return TagsController {}
+    }
+
+    // The collection IS the group: an empty path is the prefix itself, `/api/v1/tags`, with no
+    // trailing slash — a different URL, and not the one a REST collection lives at.
+    #[Get("")]
+    fn index(): List<string> {
+        return ["urgent", "later"]
+    }
+
+    // A `{…}` in a grouped route captures exactly as it does anywhere else: the joined path is what
+    // the router matches and what the injector reads its parameter names off.
+    #[Get("/{name}")]
+    fn show(name: string): string {
+        return "tag ${name}"
+    }
+
+    // Grouping moves the path and nothing else — `#[Status]` still joins to this handler, and the
+    // router still answers 201.
+    #[Status(201, description: "Created")]
+    #[Post("")]
+    fn create(body: NewTag): string {
+        return "created ${body.name}"
+    }
+}
+
+@derive(Deserialize<Json>)
+struct NewTag {
+    name: string
+}
+
+// A group prefix can itself capture. `{tenant}` is a `{…}` segment like any other — matched by the
+// router, injected by name — so a whole resource is scoped to something every one of its handlers
+// needs without any of them repeating it in their own path. This group names no `tag:`, so its
+// operations are filed under the controller, exactly as an ungrouped controller's are.
+#[Group("/tenants/{tenant}/reports")]
+class ReportsController {
+    fn new(): ReportsController {
+        return ReportsController {}
+    }
+
+    #[Get("")]
+    fn index(tenant: string): string {
+        return "reports for ${tenant}"
+    }
+
+    #[Get("/{id}")]
+    fn show(tenant: string, id: int): string {
+        return "report ${id} for ${tenant}"
+    }
+}
+
 class NotesProvider {
     fn new(): NotesProvider {
         return NotesProvider {}
@@ -127,6 +191,8 @@ class NotesProvider {
     impl ServiceProvider {
         fn register(app: App): void {
             app.register("NotesController", NotesController.new())
+            app.register("TagsController", TagsController.new())
+            app.register("ReportsController", ReportsController.new())
         }
     }
 }
@@ -149,6 +215,8 @@ echo openapi.document(app, info())
 echo app.handle("GET", "/notes", "")
 echo app.handle("GET", "/notes/7", "")
 echo app.handle("DELETE", "/notes/7", "")
+// A grouped route, at the path its `#[Group]` puts it: the controller declared `#[Get("")]`.
+echo app.handle("GET", "/api/v1/tags", "")
 
 @test {
     fn a_handler_returning_a_value_replies_as_json(): void {
@@ -213,6 +281,91 @@ echo app.handle("DELETE", "/notes/7", "")
     fn a_percent_encoded_query_value_arrives_decoded(): void {
         app = build()
         assert(app.handle("GET", "/notes/1/tags/for%20sale", "") == "note 1 tagged for sale")
+    }
+
+    // --- Route groups. ----------------------------------------------------------------------------
+
+    fn a_group_prefixes_every_route_on_its_controller(): void {
+        app = build()
+        assert(app.handle("GET", "/api/v1/tags", "").contains("urgent"))
+        assert(app.handle("GET", "/api/v1/tags/urgent", "") == "tag urgent")
+        // The path a grouped handler declares is RELATIVE: it is not ALSO served bare, or the
+        // prefix would be advisory and every group would double its own surface.
+        assert(app.handle("GET", "/tags", "") == "404 Not Found")
+        assert(app.handle("GET", "/tags/urgent", "") == "404 Not Found")
+        // …and a controller without a group is untouched by another controller's.
+        assert(app.handle("GET", "/notes/7", "").contains("note 7"))
+        assert(app.handle("GET", "/api/v1/notes/7", "") == "404 Not Found")
+    }
+
+    fn a_group_prefix_is_normalized_and_the_collection_is_the_prefix(): void {
+        paths = build().route_table().filter(fn(r) => r.controller == "TagsController").map(fn(r) => r.path)
+        // The group is written "api/v1/tags" — the one spelling a naive `prefix ~ path` join would
+        // serve at "api/v1/tags" and never match, since a request path always starts with "/".
+        assert(paths.contains("/api/v1/tags"))
+        assert(paths.contains("/api/v1/tags/{name}"))
+        // An empty declared path is the prefix itself, not the prefix plus a trailing slash.
+        assert(!paths.contains("/api/v1/tags/"))
+    }
+
+    fn a_grouped_route_is_documented_at_the_path_it_is_served_at(): void {
+        doc = openapi.document(build(), info())
+        assert(doc.contains("\"/api/v1/tags\""))
+        assert(doc.contains("\"/api/v1/tags/{name}\""))
+        assert(!doc.contains("\"/tags/{name}\""))
+
+        // The `{name}` capture is read off the JOINED path, so it is reported as a path parameter.
+        // Prefixing a route after its parameters were derived is exactly how a document ends up
+        // describing an endpoint whose parameter it never mentions.
+        show = operation(openapi.spec(build(), info()), "/api/v1/tags/{name}", "get")
+        params = show["parameters"].as<List<dyn>>() ?? []
+        assert(params.len() == 1)
+        p = params[0].as<Map<string, dyn>>() ?? {}
+        assert(p["name"].as<string>() == some("name"))
+        assert(p["in"].as<string>() == some("path"))
+        assert(p["required"].as<bool>() == some(true))
+    }
+
+    fn a_group_names_the_tag_its_operations_are_filed_under(): void {
+        spec = openapi.spec(build(), info())
+        tags = operation(spec, "/api/v1/tags", "get")["tags"].as<List<dyn>>() ?? []
+        assert(tags.len() == 1)
+        assert(tags[0].as<string>() == some("Tags"))
+        // A controller with no group is still filed under its own name — the tag every operation
+        // carried before groups existed.
+        notes = operation(spec, "/notes", "get")["tags"].as<List<dyn>>() ?? []
+        assert(notes[0].as<string>() == some("NotesController"))
+    }
+
+    fn a_group_prefix_can_capture(): void {
+        app = build()
+        // `{tenant}` lives in the prefix and `{id}` in the route; both are captures of the one
+        // joined path, and both are injected by name.
+        assert(app.handle("GET", "/tenants/acme/reports", "") == "reports for acme")
+        assert(app.handle("GET", "/tenants/acme/reports/7", "") == "report 7 for acme")
+
+        spec = openapi.spec(build(), info())
+        show = operation(spec, "/tenants/{tenant}/reports/{id}", "get")
+        names = (show["parameters"].as<List<dyn>>() ?? []).map(param_name)
+        assert(names.len() == 2)
+        assert(names.contains("tenant"))
+        assert(names.contains("id"))
+        // A group that names no `tag:` files its operations under the controller, unchanged.
+        tags = show["tags"].as<List<dyn>>() ?? []
+        assert(tags[0].as<string>() == some("ReportsController"))
+    }
+
+    fn a_declared_status_still_joins_a_grouped_route(): void {
+        app = build()
+        // `#[Status]` joins on the handler's target, which grouping does not touch — the path moved,
+        // the reflection key did not.
+        assert(app.resolve("POST", "/api/v1/tags", "{\"name\":\"new\"}", none).status() == 201)
+        assert(app.handle("POST", "/api/v1/tags", "{\"name\":\"new\"}") == "created new")
+
+        create = operation(openapi.spec(build(), info()), "/api/v1/tags", "post")
+        responses = create["responses"].as<Map<string, dyn>>() ?? {}
+        assert(responses.has("201"))
+        assert(!responses.has("200"))
     }
 
     // --- The document the app already contains. -------------------------------------------------

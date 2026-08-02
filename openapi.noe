@@ -21,7 +21,7 @@
 // which is exactly why 3.1: Noeta's optionality is a type, and 3.1 is the version whose schema
 // vocabulary can say so.
 
-use aether.{App, Route, Status, route_for}
+use aether.{App, Route, Status, group_of, route_for}
 use std.http.server
 use std.http.Response
 use std.json
@@ -167,9 +167,7 @@ fn paths_of(app: App, reg: Registry): Map<string, dyn> {
 fn operation(r: Route, table: List<Route>, docs: Map<string, string>, reg: Registry): Map<string, dyn> {
     mut op: Map<string, dyn> = {
         "operationId": operation_id(r, table),
-        // The controller is the natural grouping — it is how the author already grouped these
-        // handlers — so it is the tag, with no attribute asking for one.
-        "tags": [r.controller],
+        "tags": [tag_of(r)],
         "responses": responses(r, reg),
     }
 
@@ -331,7 +329,18 @@ fn string_schema(): Map<string, dyn> {
     return {"type": "string"}
 }
 
-// --- Reading the two attributes, and the doc tier. ----------------------------------------------
+// --- Reading the attributes, and the doc tier. ---------------------------------------------------
+
+// The tag this operation is filed under: the `tag` of the controller's `#[Group]` when it names one,
+// else the controller itself — which is how the author already grouped these handlers, and the tag
+// every operation carried before groups existed. A group with no `tag` therefore changes only where
+// its routes are served, never how the document files them.
+fn tag_of(r: Route): string {
+    return match group_of(r.target) {
+        some(g) => if g.tag == "" then r.controller else g.tag,
+        none => r.controller,
+    }
+}
 
 // The `#[Summary]` on this route's handler, if any. `attributes_of` is a program-wide query keyed by
 // type, so the join back to one handler is on the target — the same key `params_of` uses.

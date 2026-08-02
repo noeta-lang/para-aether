@@ -10,7 +10,7 @@ Because the whole route table is derived, so is its **OpenAPI document**: `para.
 
 Two modules — `para.aether` and `para.aether.openapi`:
 
-- **Routing** — `#[Get(path)]` / `#[Post(path)]` / `#[Put(path)]` / `#[Patch(path)]` / `#[Delete(path)]` method attributes; `app.discover()` builds the route table by reflection; `app.serve(port)` runs it on the bundled HTTP server. Paths capture any number of `{name}` segments.
+- **Routing** — `#[Get(path)]` / `#[Post(path)]` / `#[Put(path)]` / `#[Patch(path)]` / `#[Delete(path)]` method attributes, plus `#[Group(prefix)]` on a controller for the prefix its routes share; `app.discover()` builds the route table by reflection; `app.serve(port)` runs it on the bundled HTTP server. Paths capture any number of `{name}` segments.
 - **Dependency injection** — handler parameters are injected by declared type: a path or query parameter of the same **name** parsed to its declared scalar type (`?T` for "may be absent"), a typed request body (via `@derive(Deserialize<Json>)`), a service bound with `app.bind(name, service)` (injected at a `dyn`-typed parameter), or the live `Request`.
 - **OpenAPI generation** — `openapi.document(app, info)` derives the whole 3.1 document from the route table and the handlers' signatures; `openapi.expose(app, "/openapi.json", info)` serves it as an ordinary route.
 - **Service providers** — the `ServiceProvider` trait (`register(app)`) modularizes a feature's wiring; installed with `app.provider(...)`.
@@ -72,6 +72,29 @@ fn post(id: int, slug: string): Post { ... }
 ```
 
 Captures bind **by name**, not by position, so reordering the handler's parameters cannot silently swap them, and each is percent-decoded (`/tags/for%20sale` → `for sale`). The first capture in template order also feeds **route-model binding** (below): it is how a `bind_model`'d parameter gets loaded by id.
+
+### Route groups — one prefix, stated once
+
+`#[Group(prefix)]` on a controller is the prefix every route on it hangs under, so a version or a resource root is written once instead of repeated in each route attribute:
+
+```noeta
+#[Group("/api/v1/tags", tag: "Tags")]
+class TagsController {
+    #[Get("")]           // → /api/v1/tags
+    fn index(): List<string> { ... }
+
+    #[Get("/{name}")]    // → /api/v1/tags/{name}
+    fn show(name: string): string { ... }
+}
+```
+
+It is a **class** attribute, and that is the entire mechanism: reflection keys a class attribute by the class and a method attribute by `Class.method`, so a route finds its group by dropping the last segment of its own target. Nothing registers a group, and the same closed-world `attributes_of` query that discovers the routes discovers the prefix they share.
+
+The prefix is joined once, when the table row is built, so the table holds the **full** path and every consumer agrees by construction: the router matches it, `{…}` captures inside it are injected by name like any other, and the OpenAPI document reports the endpoint where it is actually served. There is no second, unprefixed spelling of a route anywhere — a grouped route is served at its joined path and nowhere else.
+
+A prefix is normalized (`"api/v1"`, `"/api/v1"` and `"/api/v1/"` are the same group), so a group's spelling is never the reason a route 404s, and a handler whose own path is empty **is** the group: `#[Group("/api/v1/tags")]` with `#[Get("")]` is served at `/api/v1/tags`, without a trailing slash. The optional `tag:` names the group in the generated document, where an ungrouped controller's operations are filed under the controller's own name.
+
+Groups compose with everything else on a route rather than replacing it: `#[Status]`, `#[Summary]` and parameter injection all join on the handler's reflection target, which grouping does not touch. Middleware is still app-wide (`app.use_middleware`) — a group moves paths, it does not scope a pipeline.
 
 A handler's return value becomes the reply at the one point the runtime value exists, so the declared return type may be a value type, `string`, `Response`, or `dyn`:
 
@@ -286,8 +309,8 @@ echo openapi.document(app, info)             // or print it, to commit and diff
 
 | document element | derived from |
 | --- | --- |
-| path, HTTP method | the `#[Get]` / `#[Post]` / … attribute |
-| `operationId`, `tags` | the handler's name and its controller's |
+| path, HTTP method | the `#[Get]` / `#[Post]` / … attribute, under its controller's `#[Group]` prefix |
+| `operationId`, `tags` | the handler's name, and the controller's `#[Group(tag:)]` or else the controller's own |
 | path parameters | the `{…}` segments of the route, joined to the handler's parameters by name |
 | query parameters | every other scalar parameter of the handler |
 | `required` | the parameter's type — a `?T` is optional, everything else is required; a path parameter always is |
@@ -316,7 +339,7 @@ Because the document is generated from the same table the router dispatches agai
 ## Examples
 
 - [`examples/aether-demo/`](examples/aether-demo) — service providers, DI, routing, and config in one app.
-- [`examples/aether-rest/`](examples/aether-rest) — every verb, path and query parameters injected by name, JSON replies, and the generated OpenAPI document asserted against the code it came from.
+- [`examples/aether-rest/`](examples/aether-rest) — every verb, path and query parameters injected by name, JSON replies, a `#[Group]`'d resource beside an ungrouped one, and the generated OpenAPI document asserted against the code it came from.
 - [`examples/aether-sessions/`](examples/aether-sessions) — request context, `Response` handlers, the middleware onion, and stateless cookie sessions.
 - [`examples/aether-background/`](examples/aether-background) — background jobs and a scheduled tick alongside `serve`.
 
