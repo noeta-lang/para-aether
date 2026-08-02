@@ -228,7 +228,8 @@ fn join_path(prefix: string, path: string): string {
     if path == "" || path == "/" {
         return p
     }
-    return p ~ (if path.starts_with("/") then path else "/" ~ path)
+    rest = if path.starts_with("/") then path else "/" ~ path
+    return p ~ rest
 }
 
 // The `{…}` parameter names in a route template, in order. A segment that opens `{` but never
