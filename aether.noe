@@ -735,10 +735,17 @@ pub class App {
         self.bound = self.bound ~ [name]
     }
 
-    // Whether `name` names a route-bound model.
+    // Whether `name` names a route-bound model. Compared on the SHORT name — the same rule
+    // `short_iface` states for a `dyn Trait`, and for the same reason: a nominal parameter reflects
+    // FULLY QUALIFIED (`demo.app.User`), while `bind_model` is called with the spelling the author
+    // writes at the handler (`"User"`), so registration and lookup only meet on the last dotted
+    // segment. Comparing the raw strings made every route-model binding silently miss and fall
+    // through to the body decode — which for a GET carrying no body surfaces as `400 invalid JSON`,
+    // a failure that reads like a bad request rather than an unmatched registration.
     fn is_bound(name: string): bool {
+        key = short_iface(name)
         for b in self.bound {
-            if b == name {
+            if short_iface(b) == key {
                 return true
             }
         }
@@ -1021,7 +1028,11 @@ pub class App {
     // needs no second derive and the two content types stay one code path.
     fn materialize(name: string, bind: Bind): dyn {
         if self.is_bound(name) {
-            return self.store.load(name, bind.id)
+            // The store is handed the SHORT name — the spelling the app registered with
+            // `bind_model` and passes to `stage`, and the one the docs promise (`Store.load("User",
+            // id)`). A `Store` impl keys on the model name it was written against, so it must not
+            // have to know the reflected qualified path.
+            return self.store.load(short_iface(name), bind.id)
         }
         payload = if is_form_request(bind.req) then form_to_json(server.parse_form(bind.body)) else bind.body
         return match json.decode_typed(name, payload) {
