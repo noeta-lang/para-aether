@@ -41,7 +41,7 @@ struct CreateUser {
 }
 
 class UsersController {
-    fn new(): UsersController { return UsersController {} }
+    pub fn new(): UsersController { return UsersController {} }
 
     #[Post("/users")]
     fn create(body: CreateUser): string {
@@ -59,6 +59,8 @@ app.serve(8080)
 ```
 
 A `POST /users` with a JSON body arrives at `create` as a typed `CreateUser` — decoding, routing, and dispatch are all derived from the signature and the attributes. The rest of this README walks each layer of that machinery.
+
+Methods are private by default from noeta 0.5 on, which is why the constructor is `pub`: wiring code outside the class calls it. Handler methods need no `pub` — the router reaches them by reflection, not as a caller — and a trait impl (`ServiceProvider.register`, `Middleware.handle`, `SessionStore.open`) is `pub` because a trait is an outward contract.
 
 ## Controllers and routing — the attributes are the route table
 
@@ -142,9 +144,9 @@ A `ServiceProvider` packages one feature's setup — its controllers, config, bi
 use para.aether.{App, ServiceProvider}
 
 class UsersProvider {
-    fn new(): UsersProvider { return UsersProvider {} }
+    pub fn new(): UsersProvider { return UsersProvider {} }
     impl ServiceProvider {
-        fn register(app: App): void {
+        pub fn register(app: App): void {
             app.register("UsersController", UsersController.new())
             app.configure("users.max", "100")
         }
@@ -168,10 +170,10 @@ use std.http.server
 use std.http.{Request, Response}
 
 class Stamp {
-    fn new(): Stamp { return Stamp {} }
+    pub fn new(): Stamp { return Stamp {} }
 
     impl Middleware {
-        fn handle(req: Request, next: Next): Response {
+        pub fn handle(req: Request, next: Next): Response {
             return next.run(req).with_header("x-app", "aether")
         }
     }
@@ -195,7 +197,7 @@ use std.http.{Request, Response}
 use std.session
 
 class Home {
-    fn new(): Home { return Home {} }
+    pub fn new(): Home { return Home {} }
 
     #[Get("/")]
     fn index(req: Request, sessions: dyn SessionStore): Response {

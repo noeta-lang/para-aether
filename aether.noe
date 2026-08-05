@@ -373,7 +373,7 @@ pub struct Next {
 
     // Continue inward. Calling this is what makes a layer transparent; NOT calling it is what makes a
     // layer answer on its own (an auth reject, a cache hit, a short-circuit reply).
-    fn run(req: Request): Response {
+    pub fn run(req: Request): Response {
         if self.index >= self.stack.len() {
             return self.app.serve_request(req)
         }
@@ -572,19 +572,19 @@ fn coerce_response(result: dyn, status: int): Response {
 pub class Config {
     mut values: Map<string, string>
 
-    fn new(): Config {
+    pub fn new(): Config {
         return Config { values: {} }
     }
 
-    fn set(key: string, value: string): void {
+    pub fn set(key: string, value: string): void {
         self.values = self.values.set(key, value)
     }
 
-    fn get(key: string, fallback: string): string {
+    pub fn get(key: string, fallback: string): string {
         return self.values.get_or(key, fallback)
     }
 
-    fn has(key: string): bool {
+    pub fn has(key: string): bool {
         return self.values.has(key)
     }
 }
@@ -614,19 +614,19 @@ pub trait Store {
 // `load` refuses (a route bound a model but no store was wired to load it from). So aether always has
 // a `Store` to call — no per-request `none`-checks on the hot path.
 class NullStore {
-    fn new(): NullStore {
+    pub fn new(): NullStore {
         return NullStore {}
     }
 }
 
 impl Store for NullStore {
-    fn load(model: string, id: string): dyn {
+    pub fn load(model: string, id: string): dyn {
         return panic("no store configured — call `app.set_store(...)` to load model ${model}")
     }
 
-    fn stage(model: string, data: string): void {}
+    pub fn stage(model: string, data: string): void {}
 
-    fn flush(): void {}
+    pub fn flush(): void {}
 }
 
 // --- The session-store seam. -------------------------------------------------------------------
@@ -664,16 +664,16 @@ pub class CookieSessions {
     max_age: int
     secure: bool
 
-    fn new(keys: Keyring, max_age: int, secure: bool): CookieSessions {
+    pub fn new(keys: Keyring, max_age: int, secure: bool): CookieSessions {
         return CookieSessions { keys: keys, max_age: max_age, secure: secure }
     }
 
     impl SessionStore {
-        fn open(req: Request): Session {
+        pub fn open(req: Request): Session {
             return session.open(req, self.keys)
         }
 
-        fn attach(resp: Response, s: Session): Response {
+        pub fn attach(resp: Response, s: Session): Response {
             return session.attach(resp, s, self.keys, self.max_age, self.secure)
         }
     }
@@ -702,7 +702,7 @@ pub class App {
     mut static_dir: string // filesystem root served for unmatched GETs ("" = no static mount)
     config: Config
 
-    fn new(): App {
+    pub fn new(): App {
         store = NullStore.new()
         app = App { routes: [], controllers: {}, middleware: [], bound: [], store: store, services: {}, static_dir: "", config: Config.new() }
         // The data `Store` is a service like any other — registered under `Store` so a `dyn Store`
@@ -714,7 +714,7 @@ pub class App {
 
     // Wire in the data store an app's models load/persist through (its `para.db`-backed impl, a test
     // fake, …). Injected handler parameters and the end-of-request flush dispatch through it.
-    fn set_store(s: dyn Store): void {
+    pub fn set_store(s: dyn Store): void {
         self.store = s
         // Keep the container's `Store` entry pointing at the live store, so `dyn Store` injection and
         // the `store` field the flush/route-model path uses never diverge.
@@ -725,13 +725,13 @@ pub class App {
     // `name` is the interface's SHORT trait name (`"Store"`, `"SessionStore"`, `"Clock"`) — the same
     // last segment `arg_for` normalizes a reflected `dyn Trait` to, so a service registered here is the
     // one injected there. Providers call this during setup; re-binding a name replaces the service.
-    fn bind(name: string, service: dyn): void {
+    pub fn bind(name: string, service: dyn): void {
         self.services = self.services.set(name, service)
     }
 
     // Mark a model type as **route-bound**: a handler parameter of this type is loaded from the store
     // by the route's `{id}` (Laravel implicit binding), instead of being decoded from the request body.
-    fn bind_model(name: string): void {
+    pub fn bind_model(name: string): void {
         self.bound = self.bound ~ [name]
     }
 
@@ -746,27 +746,27 @@ pub class App {
     }
 
     // Run a service provider's setup against this app (register controllers, config, middleware).
-    fn provider(p: dyn ServiceProvider): void {
+    pub fn provider(p: dyn ServiceProvider): void {
         p.register(self)
     }
 
     // Set an app configuration value (providers write it during setup).
-    fn configure(key: string, value: string): void {
+    pub fn configure(key: string, value: string): void {
         self.config.set(key, value)
     }
 
     // Read an app configuration value, or `fallback` if unset.
-    fn setting(key: string, fallback: string): string {
+    pub fn setting(key: string, fallback: string): string {
         return self.config.get(key, fallback)
     }
 
     // Add a middleware to the pipeline (run in registration order before every handler).
-    fn use_middleware(mw: dyn Middleware): void {
+    pub fn use_middleware(mw: dyn Middleware): void {
         self.middleware = self.middleware ~ [mw]
     }
 
     // Register a controller instance under its type name (the leading segment of its route targets).
-    fn register(name: string, controller: dyn): void {
+    pub fn register(name: string, controller: dyn): void {
         self.controllers = self.controllers.set(name, controller)
     }
 
@@ -775,7 +775,7 @@ pub class App {
     // One loop per verb, because `attributes_of::<T>()` is a closed-world query keyed by type: there
     // is no "every attribute" query to write this as one pass, and that is the same property that
     // makes a misspelled attribute a compile error instead of a route that never matches.
-    fn discover(): void {
+    pub fn discover(): void {
         mut table: List<Route> = self.routes
         for a in attributes_of::<Get>() {
             table = table ~ [route_for("GET", a.target, a.value.path)]
@@ -801,7 +801,7 @@ pub class App {
     // Mount a directory of static assets, served for GETs that match no route. This is the
     // framework's job rather than the templating package's: aether owns the router and the
     // fall-through, and "no route matched, try the filesystem" is a routing decision.
-    fn serve_files(dir: string): void {
+    pub fn serve_files(dir: string): void {
         self.static_dir = dir
     }
 
@@ -813,7 +813,7 @@ pub class App {
     // generated OpenAPI document at whatever URL the app wants it (`openapi.expose`). Build the row
     // with `route_for`, so a hand-added route carries the same reflection target every discovered one
     // does and its handler's parameters are injected identically.
-    fn add_route(r: Route): void {
+    pub fn add_route(r: Route): void {
         self.routes = self.routes ~ [r]
     }
 
@@ -821,7 +821,7 @@ pub class App {
     // own `openapi` module turns this plus each handler's reflected signature into an OpenAPI
     // document, and it must read the SAME table the router dispatches against — a spec derived from
     // a second traversal could describe routes the app does not serve.
-    fn route_table(): List<Route> {
+    pub fn route_table(): List<Route> {
         return self.routes
     }
 
@@ -832,13 +832,13 @@ pub class App {
     // keeps this call byte-for-byte what it always returned — including "404 Not Found" and the
     // "500 …" strings, which are now the bodies of a 404/500 `Response`. No live request to inject,
     // so a handler that declares a `Request` parameter is exercised through `serve`, not this call.
-    fn handle(method: string, path: string, body: string): string {
+    pub fn handle(method: string, path: string, body: string): string {
         return self.resolve(method, path, body, none).body()
     }
 
     // The `Response`-returning twin of `handle`, for when the status or a header is the point —
     // a static asset's `Content-Type`, a 404, a redirect. Same resolution, no projection.
-    fn respond(method: string, path: string, body: string): Response {
+    pub fn respond(method: string, path: string, body: string): Response {
         return self.resolve(method, path, body, none)
     }
 
@@ -1034,7 +1034,7 @@ pub class App {
     // request, inspect or replace the response, or short-circuit; `Next.run` bottoms out in
     // `serve_request`, which dispatches the route and flushes the unit-of-work. The first middleware
     // registered is the outermost — it sees the request first and the response last.
-    fn route(req: Request): Response {
+    pub fn route(req: Request): Response {
         return Next { stack: self.middleware, index: 0, app: self }.run(req)
     }
 
@@ -1042,7 +1042,7 @@ pub class App {
     // unit-of-work (a no-op if nothing was staged). The same sequence `serve_request` runs for a live
     // HTTP request, without the `Request`/`Response` wrappers — so an app can test its whole DI +
     // route-model-binding + flush path with plain string calls (no server, no sockets).
-    fn dispatch_request(method: string, path: string, body: string): string {
+    pub fn dispatch_request(method: string, path: string, body: string): string {
         out = self.handle(method, path, body)
         self.store.flush()
         return out
@@ -1055,7 +1055,7 @@ pub class App {
     // body to a string. The route → flush sequence is otherwise identical, so the string path stays a
     // faithful rehearsal of the server path. It is the onion's terminal — `Next.run` calls it once
     // the pipeline is exhausted.
-    fn serve_request(req: Request): Response {
+    pub fn serve_request(req: Request): Response {
         resp = self.resolve(req.method(), req.path(), req.body(), some(req))
         self.store.flush()
         return resp
@@ -1066,7 +1066,7 @@ pub class App {
     // so no caller code after it is reachable. Declaring it honestly matters — the tier runners'
     // shared-setup filter drops a top-level `app.serve(port)` from a `noeta test` run precisely
     // because it is `never`; a `void` here would let the test harness run the server and block.
-    fn serve(port: int): never {
+    pub fn serve(port: int): never {
         server.serve(port, self.route)
     }
 }

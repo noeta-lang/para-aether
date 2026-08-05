@@ -24,7 +24,7 @@ use std.session
 // controller carries no session state, and swapping the stateless default for a stored backend is a
 // one-line change at the wiring site (`app.bind("SessionStore", …)`), with no handler touched.
 class Home {
-    fn new(): Home {
+    pub fn new(): Home {
         return Home {}
     }
 
@@ -46,12 +46,12 @@ class Home {
 
 // A3: a pass-through onion layer — stamp every reply with a header on the way out.
 class Stamp {
-    fn new(): Stamp {
+    pub fn new(): Stamp {
         return Stamp {}
     }
 
     impl Middleware {
-        fn handle(req: Request, next: Next): Response {
+        pub fn handle(req: Request, next: Next): Response {
             return next.run(req).with_header("x-app", "aether")
         }
     }

@@ -10,7 +10,7 @@ struct CreateUser {
 }
 
 class UsersController {
-    fn new(): UsersController {
+    pub fn new(): UsersController {
         return UsersController {}
     }
 
@@ -27,11 +27,11 @@ class UsersController {
 
 // A service provider modularizing the "users" feature: registers its controller and config.
 class UsersProvider {
-    fn new(): UsersProvider {
+    pub fn new(): UsersProvider {
         return UsersProvider {}
     }
     impl ServiceProvider {
-        fn register(app: App): void {
+        pub fn register(app: App): void {
             app.register("UsersController", UsersController.new())
             app.configure("users.max", "100")
         }
