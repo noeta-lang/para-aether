@@ -86,7 +86,7 @@ pub class SpecController {
     app: App
     info: Info
 
-    fn new(app: App, info: Info): SpecController {
+    pub fn new(app: App, info: Info): SpecController {
         return SpecController { app: app, info: info }
     }
 
@@ -465,7 +465,7 @@ class Registry {
     // set: an entry exists from the moment a type's walk STARTS.
     mut names: Map<string, string>
 
-    fn new(): Registry {
+    pub fn new(): Registry {
         return Registry { schemas: {}, names: {} }
     }
 
@@ -475,7 +475,7 @@ class Registry {
     // own type (a tree node, a linked list) would otherwise recurse until the stack ran out. The
     // reference is emitted either way, so the self-reference resolves to the definition in progress
     // — which is exactly what a `$ref` is for.
-    fn reference(name: string): Map<string, dyn> {
+    pub fn reference(name: string): Map<string, dyn> {
         if !self.names.has(name) {
             component = self.component_name(name)
             self.names = self.names.set(name, component)
@@ -503,7 +503,7 @@ class Registry {
         return leaf
     }
 
-    fn all(): Map<string, dyn> {
+    pub fn all(): Map<string, dyn> {
         return self.schemas
     }
 }

@@ -5,10 +5,10 @@ version = "0.1.0"
 [dependencies]
 para = [{ path = "../.." }]
 
-# `[tiers]` binds the local `@test` name to its provider; the target only says which of those
-# names are live. The two were one table before 0.3.0, where a target's sub-table named the
-# provider directly.
-[tiers]
+# `[directives]` binds every `@name` this package writes to the package that provides it — here
+# `@test` to `std`. The target only says which of those names are live. Named `[tiers]` before
+# noeta 0.5, where tier bindings and directive bindings were still two tables.
+[directives]
 test = "std"
 
 [targets.development]

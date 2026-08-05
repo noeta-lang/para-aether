@@ -27,7 +27,7 @@ struct Filter {
 }
 
 class NotesController {
-    fn new(): NotesController {
+    pub fn new(): NotesController {
         return NotesController {}
     }
 
@@ -131,7 +131,7 @@ class NotesController {
 // it and they are filed under the controller, exactly as an ungrouped controller's are.
 #[Group("api/v1/tags", tag: "Tags")]
 class TagsController {
-    fn new(): TagsController {
+    pub fn new(): TagsController {
         return TagsController {}
     }
 
@@ -169,7 +169,7 @@ struct NewTag {
 // operations are filed under the controller, exactly as an ungrouped controller's are.
 #[Group("/tenants/{tenant}/reports")]
 class ReportsController {
-    fn new(): ReportsController {
+    pub fn new(): ReportsController {
         return ReportsController {}
     }
 
@@ -185,11 +185,11 @@ class ReportsController {
 }
 
 class NotesProvider {
-    fn new(): NotesProvider {
+    pub fn new(): NotesProvider {
         return NotesProvider {}
     }
     impl ServiceProvider {
-        fn register(app: App): void {
+        pub fn register(app: App): void {
             app.register("NotesController", NotesController.new())
             app.register("TagsController", TagsController.new())
             app.register("ReportsController", ReportsController.new())

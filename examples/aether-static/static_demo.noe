@@ -15,7 +15,7 @@ use para.aether.{App, Get}
 use std.http.server
 
 class HealthController {
-    fn new(): HealthController {
+    pub fn new(): HealthController {
         return HealthController {}
     }
 

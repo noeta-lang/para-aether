@@ -25,6 +25,7 @@ Pure Noeta — no cargo anywhere in this repo.
 - **American English** throughout — code, comments, and docs (`behavior`, not `behaviour`).
 - **Conventional commits** for all commit titles. Commit each green slice as it completes, but **never `git push` without explicit authorization**. Never move a published `v*` tag — a release is a new tag.
 - Implement in full — no stubs or TODOs; new functionality lands with tests.
+- **Methods are private by default** (noeta 0.5+). Add `pub` only where the checker demands it — E0076 at a call site outside the type, E0015 on a trait impl — or where the README documents the method as this package's API. A framework internal such as `dispatch`, `build_args`, or `materialize` stays private, and so do route handlers: the router reaches them by reflection, not as a caller.
 - Keep `README.md` and this file up to date when layout or behavior changes.
 
 ## CI

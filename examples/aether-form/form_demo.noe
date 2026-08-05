@@ -18,7 +18,7 @@ struct CreateUser {
 }
 
 class UsersController {
-    fn new(): UsersController {
+    pub fn new(): UsersController {
         return UsersController {}
     }
 
