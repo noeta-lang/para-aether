@@ -854,7 +854,7 @@ pub class App {
     // in scope, so a handler parameter typed `Request` can be injected when one is available. Returns
     // a full `Response` — status and headers included — so the server path carries them verbatim and
     // the string path projects out the body.
-    fn resolve(method: string, path: string, body: string, req: ?Request): Response {
+    pub fn resolve(method: string, path: string, body: string, req: ?Request): Response {
         // The string path carries its query in the path it was handed (`"/pets?status=sold"`); the
         // server path never does (`Request.path()` strips it, `Request.query` reads it). Splitting
         // here is what lets one route table serve both, and what lets a test rehearse a query
